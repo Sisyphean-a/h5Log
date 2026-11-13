@@ -150,7 +150,7 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
       received: 4,
       evicted: 0,
       retentionHours: 12,
-      limits: { maxLogs: 2000, maxSubscribers: 50 },
+      limits: { maxLogs: 8000, maxSubscribers: 50 },
     });
   });
 

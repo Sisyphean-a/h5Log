@@ -113,8 +113,10 @@ it("历史分页维持历史模式并可返回实时", async () => {
   expect(fetchMock.mock.calls.map(call => String(call[0]))).toContain("/api/logs?limit=200&before=51");
   expect(document.querySelector("#view-title")!.textContent).toBe("历史日志");
   stream.emit("logs", { logs: [item(251)], clients: [client] });
-  expect(document.querySelector("#scope-summary")!.textContent).toContain(
-    "251 条",
+  await vi.waitFor(() =>
+    expect(document.querySelector("#scope-summary")!.textContent).toContain(
+      "251 条",
+    ),
   );
   document.querySelector<HTMLButtonElement>("#latest")!.click();
   await vi.waitFor(() =>

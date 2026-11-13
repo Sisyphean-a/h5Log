@@ -107,8 +107,10 @@ it("重连后重新读取同一个历史页并合入断线期间的新日志", a
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("before=1");
   second.emit("logs", { logs: [item(301)], clients: [client] });
-  expect(document.querySelector("#scope-summary")!.textContent).toContain(
-    "301 条",
+  await vi.waitFor(() =>
+    expect(document.querySelector("#scope-summary")!.textContent).toContain(
+      "301 条",
+    ),
   );
   finishReconnect(response(310));
   await vi.waitFor(() =>

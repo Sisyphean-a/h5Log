@@ -180,7 +180,9 @@ it("筛选缓冲不会被无关日志挤掉，清空使用全局游标，后退�
     logs: [log(751, "error", "bridge")],
     clients: [client],
   });
-  expect(document.querySelectorAll(".log-row")).toHaveLength(1);
+  await vi.waitFor(() =>
+    expect(document.querySelectorAll(".log-row")).toHaveLength(1),
+  );
 
   fetchPage.mockResolvedValue(
     response(page([log(751, "error", "bridge")], 751)),
@@ -213,7 +215,9 @@ it("筛选缓冲不会被无关日志挤掉，清空使用全局游标，后退�
     logs: [log(753, "error", "bridge")],
     clients: [client],
   });
-  expect(document.querySelectorAll(".log-row")).toHaveLength(3);
+  await vi.waitFor(() =>
+    expect(document.querySelectorAll(".log-row")).toHaveLength(3),
+  );
   expect(document.activeElement).toBe(focused);
   window.dispatchEvent(new PageTransitionEvent("pagehide"));
 });

@@ -24,6 +24,8 @@ export const remoteLogger = createLogger({
   endpoint: import.meta.env.VITE_LOG_ENDPOINT,
   deviceName: "26 测试手机",
   captureFetch: false,
+  // 合批间隔：默认 250ms，越小越即时、请求数越多（最小 50ms）
+  flushIntervalMs: 250,
 });
 ```
 

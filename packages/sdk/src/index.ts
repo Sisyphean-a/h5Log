@@ -20,6 +20,15 @@ export type * from "./types.js";
 
 const MAX_QUEUE_EVENTS = 1000;
 const MAX_QUEUE_BYTES = 4 * 1024 * 1024;
+const DEFAULT_FLUSH_INTERVAL_MS = 250;
+const MIN_FLUSH_INTERVAL_MS = 50;
+
+/** Rule: 采样频繁的桥接与接口日志需要尽快上屏，默认 250ms 合批；过小会放大请求数。 */
+function flushInterval(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    return DEFAULT_FLUSH_INTERVAL_MS;
+  return Math.min(10000, Math.max(MIN_FLUSH_INTERVAL_MS, Math.round(value)));
+}
 const levels: LogLevel[] = ["debug", "info", "log", "warn", "error"];
 let currentLogger: Logger | undefined;
 
@@ -291,7 +300,7 @@ export function createLogger(options: LoggerOptions): Logger {
     }
     const timer = setInterval(() => {
       void flush();
-    }, 1000);
+    }, flushInterval(options.flushIntervalMs));
     const onPageHide = (): void => {
       void flush();
     };

@@ -106,6 +106,7 @@ export interface LoggerOptions {
   captureConsole?: boolean;
   captureErrors?: boolean;
   captureFetch?: boolean;
+  flushIntervalMs?: number;
 }
 export const CONTEXT_LIMITS: Readonly<Record<keyof LogContext, number>> =
   Object.freeze({

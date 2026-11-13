@@ -16,8 +16,8 @@ const host = process.env.HOST ?? "127.0.0.1";
 const { server, close } = createLogServer({
   webRoot: fileURLToPath(new URL("../web/", import.meta.url)),
   store: new LogStore({
-    maxLogs: positiveNumber("MAX_LOGS", 2000),
-    maxBytes: positiveNumber("MAX_MEMORY_MB", 4) * 1024 * 1024,
+    maxLogs: positiveNumber("MAX_LOGS", 8000),
+    maxBytes: positiveNumber("MAX_MEMORY_MB", 16) * 1024 * 1024,
     retentionHours: positiveNumber("RETENTION_HOURS", 12),
   }),
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? "*")

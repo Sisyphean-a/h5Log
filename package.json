@@ -21,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "axios": "1.21.1",
+    "fake-indexeddb": "6.2.8",
     "jsdom": "31.0.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2",

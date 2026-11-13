@@ -121,6 +121,28 @@ describe("SDK 采集和生命周期", () => {
     ).toBeLessThan(128 * 1024);
   });
 
+  it("按 flushIntervalMs 定时合批上传，越界值被夹到安全区间", async () => {
+    const client = start({ flushIntervalMs: 100 });
+    client.record("custom", "info", "fast");
+    await vi.advanceTimersByTimeAsync(99);
+    expect(upload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(upload).toHaveBeenCalledTimes(1);
+
+    client.record("custom", "info", "too small");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(client.getStatus().queued).toBe(1);
+    client.stop();
+
+    const clamped = start({ flushIntervalMs: 1 });
+    clamped.record("custom", "info", "clamped");
+    await vi.advanceTimersByTimeAsync(49);
+    expect(upload).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
+
   it("断网时有限缓冲，退避后恢复上传", async () => {
     upload.mockRejectedValueOnce(new Error("offline"));
     const client = start();

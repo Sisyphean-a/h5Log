@@ -9,7 +9,7 @@ context: [remote-logging](../../requirements/contexts/remote-logging.md)
 
 ## 入口与契约
 
-- src/index.ts：createLogger、console/异常监听、快照队列、独立 fetch 上传及停止恢复；创建采集器不等待日志服务器。
+- src/index.ts：createLogger、console/异常监听、快照队列、独立 fetch 上传及停止恢复；创建采集器不等待日志服务器。默认每 250 毫秒合批发送至多 50 条，`flushIntervalMs` 可调（夹在 50–10000 毫秒），页面隐藏、pagehide、重新联网时立即发送。
 - src/axios.ts：可选入口 @h5-log/sdk/axios，包装默认 adapter，在业务响应解包前采集；保持原响应与原错误。每次安装使用独立请求 ID 命名空间。
 - src/fetch.ts：通过 captureFetch 显式启用，文本或 JSON 响应克隆有限读取；二进制、事件流和请求流不读取正文，也不克隆 Request 正文，避免 tee 分支无限缓冲。上传始终使用包装前的 fetch，避免自身采集；每次安装使用独立请求 ID 命名空间。
 - src/types.ts：日志事件、客户端、存储记录、查询页类型和上下文字段上限的唯一契约；SDK 初始化与服务端校验共同使用。请求关联标识单独保留，正文截断后仍可关联。

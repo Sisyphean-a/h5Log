@@ -8,6 +8,7 @@ import type {
   StoredLog,
 } from "@h5-log/sdk";
 import { createInspector, messageText } from "./inspector.js";
+import { createLocalHistory } from "./history.js";
 
 const element = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -22,6 +23,12 @@ const logsContainer = element("logs");
 const older = element<HTMLButtonElement>("older");
 const latest = element<HTMLButtonElement>("latest");
 const inspector = createInspector(copy);
+// Rule: 本地历史只做旁路持久化，实时渲染仍走 SSE；存储不可用时退回服务端窗口。
+const localHistory = createLocalHistory({
+  onError: (message) => notice(message, true),
+});
+let localMode = false;
+let serverHasMore = true;
 let logs: StoredLog[] = [];
 let clients: LogClient[] = [];
 let sessions: LogSession[] = [];
@@ -339,6 +346,19 @@ function row(log: StoredLog): HTMLDetailsElement {
   });
   return details;
 }
+let renderScheduled = false;
+/** Rule: 高频日志按帧合并渲染，避免每批 SSE 消息都重排列表与滚动。 */
+function scheduleRender(): void {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  const run = (): void => {
+    renderScheduled = false;
+    renderLogs();
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+  else run();
+}
+
 function renderLogs(): void {
   const previousScroll = scrollArea.scrollTop;
   const visibleIds = new Set(logs.map((log) => log.id));
@@ -478,6 +498,10 @@ async function loadPage(before?: number): Promise<void> {
       return;
     }
     serverId = page.serverId;
+    localHistory?.setServerId(page.serverId);
+    localHistory?.append(page.logs);
+    serverHasMore = page.hasMore;
+    localMode = false;
     clients = page.clients ?? [];
     sessions = page.sessions ?? [];
     cursor = Math.max(page.cursor, pendingCursor);
@@ -511,6 +535,7 @@ async function loadPage(before?: number): Promise<void> {
     pendingOverflow = false;
     loading = false;
     older.disabled = !page.hasMore && merged.length <= 200 && !overflowed;
+    if (older.disabled) void enableLocalHistory();
     renderClients();
     renderLogs();
     notice("");
@@ -528,6 +553,46 @@ async function loadPage(before?: number): Promise<void> {
     renderLogs();
   }
 }
+async function enableLocalHistory(): Promise<void> {
+  const oldest = logs[0];
+  if (!localHistory || !oldest || localMode) return;
+  const version = requestVersion;
+  const has = await localHistory.hasBefore(oldest.id, matches);
+  if (version !== requestVersion || loading || !has) return;
+  older.disabled = false;
+}
+
+async function loadLocalPage(before: number): Promise<void> {
+  const history = localHistory;
+  if (!history) return;
+  const version = ++requestVersion;
+  loading = true;
+  older.disabled = true;
+  try {
+    const result = await history.page({ before, limit: 200, accept: matches });
+    if (version !== requestVersion) return;
+    loading = false;
+    if (result.logs.length === 0) {
+      notice("没有更早的本地历史：只保留当前浏览器看过的日志");
+      return;
+    }
+    logs = result.logs;
+    localMode = true;
+    historyPage = true;
+    historyBefore = before;
+    older.disabled = !result.hasMore;
+    renderLogs();
+    notice("本地历史：来自当前浏览器，不在服务器保留窗口内");
+  } catch (error) {
+    if (version !== requestVersion) return;
+    loading = false;
+    notice(
+      `读取本地历史失败：${error instanceof Error ? error.message : "浏览器存储异常"}`,
+      true,
+    );
+  }
+}
+
 function resetView(): void {
   clearTimeout(searchTimer);
   clearAfter = 0;
@@ -557,7 +622,10 @@ search.addEventListener("input", () => {
   searchTimer = setTimeout(resetView, 200);
 });
 older.addEventListener("click", () => {
-  if (logs[0]) void loadPage(logs[0].id);
+  const oldest = logs[0];
+  if (!oldest) return;
+  if (localMode || !serverHasMore) void loadLocalPage(oldest.id);
+  else void loadPage(oldest.id);
 });
 latest.addEventListener("click", () => {
   void loadPage();
@@ -687,6 +755,7 @@ function connectStream(): void {
         notice("服务器已重启，保留日志已清空");
       }
       serverId = hello.serverId;
+      localHistory?.setServerId(hello.serverId);
       clients = hello.clients;
       renderClients();
       if (reconnect || restarted)
@@ -702,6 +771,7 @@ function connectStream(): void {
         clients: LogClient[];
       };
       clients = batch.clients;
+      localHistory?.append(batch.logs);
       renderClients();
       inspector.receive(batch.logs);
       const unseen = batch.logs.filter(
@@ -730,7 +800,7 @@ function connectStream(): void {
         }
         if (historyPage && matching.length > 0) {
           total += matching.length;
-          renderLogs();
+          scheduleRender();
         }
         const matched = [...pending, ...matching];
         pendingOverflow ||=
@@ -748,7 +818,7 @@ function connectStream(): void {
       addSessions(scoped);
       if (historyPage) {
         total += fresh.length;
-        renderLogs();
+        scheduleRender();
         return;
       }
       if (fresh.length === 0) return;
@@ -756,7 +826,7 @@ function connectStream(): void {
       const combined = [...logs, ...fresh];
       if (combined.length > 200) older.disabled = false;
       logs = combined.slice(-200);
-      renderLogs();
+      scheduleRender();
     } catch {
       notice("实时数据格式异常，请重新读取", true);
     }
@@ -797,7 +867,7 @@ function connectStream(): void {
     }
   });
 }
-const setupCode = `import { createLogger } from '@h5-log/sdk';\n\nexport const logger = createLogger({\n  enabled: import.meta.env.MODE === 'test',\n  appId: '26',\n  endpoint: '${location.origin}/api/logs',\n  captureFetch: true,\n});`;
+const setupCode = `import { createLogger } from '@h5-log/sdk';\n\nexport const logger = createLogger({\n  enabled: import.meta.env.MODE === 'test',\n  appId: '26',\n  endpoint: '${location.origin}/api/logs',\n  captureFetch: true,\n  flushIntervalMs: 250,\n});`;
 element("setup-code").textContent = setupCode;
 element("setup").addEventListener("click", () =>
   element<HTMLDialogElement>("setup-dialog").showModal(),

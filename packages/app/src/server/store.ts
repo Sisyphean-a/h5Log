@@ -51,8 +51,8 @@ export class LogStore {
   private evictedThroughId = 0;
 
   constructor(options: StoreOptions = {}) {
-    this.maxLogs = options.maxLogs ?? 2000;
-    this.maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
+    this.maxLogs = options.maxLogs ?? 8000;
+    this.maxBytes = options.maxBytes ?? 16 * 1024 * 1024;
     this.retentionHours = options.retentionHours ?? RETENTION_HOURS;
     this.retentionMs = this.retentionHours * 60 * 60 * 1000;
     this.now = options.now ?? Date.now;
