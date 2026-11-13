@@ -1,0 +1,14 @@
+{
+  "name": "@h5-log/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@h5-log/sdk": "0.1.0",
+    "axios": "1.21.1"
+  }
+}

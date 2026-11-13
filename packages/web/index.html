@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>H5 Log</title>
+  </head>
+  <body>
+    <div class="workspace">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="H5 Log 首页"
+          ><span class="brand-mark">h5</span
+          ><span>Log<span class="brand-dot">.</span></span
+          ><span class="environment-badge">TEST</span></a
+        >
+        <div class="scope-control">
+          <label for="app-filter">应用</label
+          ><select id="app-filter">
+            <option value="">全部应用</option>
+          </select>
+        </div>
+        <div class="sidebar-heading">
+          <span>客户端</span><span id="client-count" class="count">0</span>
+        </div>
+        <nav id="clients" class="client-list" aria-label="选择客户端"></nav>
+        <footer class="sidebar-footer">
+          <button id="service" title="查看日志服务状态">
+            <span class="retention-dot"></span>12 小时内存保留</button
+          ><button id="setup">接入 SDK ↗</button>
+        </footer>
+      </aside>
+      <main class="main">
+        <header class="page-header">
+          <div class="scope-heading">
+            <div class="eyebrow">H5 REMOTE LOGS</div>
+            <h1 id="scope-title">全部客户端</h1>
+            <div id="scope-detail" class="scope-detail">等待日志接入</div>
+          </div>
+          <div class="header-actions">
+            <button id="refresh" title="重新读取保留日志">↻ 刷新</button
+            ><span id="connection" class="connection connecting" role="status"
+              ><span></span><span id="connection-text">连接中</span></span
+            >
+          </div>
+        </header>
+        <div class="workspace-nav">
+          <div role="tablist" aria-label="日志类型">
+            <button id="tab-all" role="tab" aria-selected="true">
+              全部日志</button
+            ><button id="tab-http" role="tab" aria-selected="false">
+              网络请求</button
+            ><button id="tab-errors" role="tab" aria-selected="false">
+              异常
+            </button>
+          </div>
+          <span id="scope-summary">保留最近 12 小时</span>
+        </div>
+        <section class="toolbar" aria-label="日志筛选">
+          <div class="search-wrap">
+            <span aria-hidden="true">⌕</span
+            ><input
+              id="search"
+              type="search"
+              aria-label="搜索日志"
+              placeholder="搜索内容、接口路径或请求 ID"
+              autocomplete="off"
+            /><kbd>/</kbd>
+          </div>
+          <select id="level" aria-label="日志级别">
+            <option value="">全部级别</option>
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+            <option value="log">Log</option>
+            <option value="debug">Debug</option>
+          </select>
+          <select id="source" aria-label="日志来源">
+            <option value="">全部来源</option>
+            <option value="console">Console</option>
+            <option value="http">HTTP</option>
+            <option value="bridge">Bridge</option>
+            <option value="error">JS 异常</option>
+            <option value="custom">Custom</option>
+          </select>
+          <select id="environment" aria-label="环境">
+            <option value="">全部环境</option>
+          </select>
+          <select id="session" aria-label="页面会话">
+            <option value="">全部会话</option>
+          </select>
+          <button
+            id="reset-filters"
+            class="reset-filters"
+            title="重置全部筛选"
+            hidden
+          >
+            重置
+          </button>
+        </section>
+        <div class="work-area">
+          <section class="console-panel" aria-label="日志工作区">
+            <div class="console-toolbar">
+              <div class="console-caption">
+                <span id="view-state" class="live-dot"></span
+                ><span id="view-title">实时日志</span
+                ><span id="log-count" class="muted">0 条</span>
+              </div>
+              <div class="console-actions">
+                <button id="follow" aria-pressed="true">
+                  自动滚动 <span id="follow-state">开</span></button
+                ><button id="copy-visible">复制</button
+                ><button id="export">导出本页</button
+                ><button id="clear">清空视图</button>
+              </div>
+            </div>
+            <div id="notice" class="notice" role="status" hidden></div>
+            <div class="column-head" aria-hidden="true">
+              <span>时间</span><span>客户端</span><span>级别</span
+              ><span>来源</span><span>内容</span>
+            </div>
+            <div
+              id="log-scroll"
+              class="log-scroll"
+              tabindex="0"
+              aria-label="日志列表"
+            >
+              <div id="empty" class="empty">
+                <div class="empty-symbol" aria-hidden="true">&gt;_</div>
+                <h2 id="empty-title">等待第一条日志</h2>
+                <p id="empty-message">接入 H5，或先用演示页发送一条日志。</p>
+                <a
+                  id="empty-demo"
+                  href="/demo.html"
+                  target="_blank"
+                  rel="noopener"
+                  >打开演示 ↗</a
+                >
+              </div>
+              <div id="logs"></div>
+            </div>
+            <footer class="console-footer">
+              <span id="page-note">每页最多 200 条</span>
+              <div>
+                <button id="older" disabled>← 更早</button
+                ><button id="latest" hidden>回到实时 ↓</button>
+              </div>
+            </footer>
+          </section>
+          <aside id="inspector" class="inspector" aria-label="日志详情" hidden>
+            <div class="inspector-header">
+              <span id="detail-kind">日志详情</span>
+              <div>
+                <button id="copy-detail" title="复制完整事件">复制</button
+                ><button
+                  id="close-detail"
+                  title="关闭详情 (Esc)"
+                  aria-label="关闭详情"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div class="inspector-scroll">
+              <div id="detail-heading"></div>
+              <div id="detail-meta" class="detail-meta"></div>
+              <div id="detail-state" class="detail-state" role="status"></div>
+              <div class="detail-tabs" role="tablist" aria-label="详情格式">
+                <button id="detail-structured" role="tab" aria-selected="true">
+                  结构</button
+                ><button id="detail-raw" role="tab" aria-selected="false">
+                  原始事件
+                </button>
+              </div>
+              <div id="detail-content"></div>
+            </div>
+            <div class="inspector-footer">
+              ↑ ↓ 切换日志 <span>Esc 关闭</span>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+    <dialog id="setup-dialog" class="tool-dialog">
+      <div class="dialog-heading">
+        <h2>接入 SDK</h2>
+        <button data-close="setup-dialog" aria-label="关闭 SDK 接入说明">
+          ×
+        </button>
+      </div>
+      <p>在 H5 测试入口初始化；已有 console 会自动上传。</p>
+      <pre id="setup-code"></pre>
+      <div class="dialog-actions">
+        <a href="/demo.html" target="_blank" rel="noopener">打开演示 ↗</a
+        ><button id="copy-setup" class="primary">复制示例</button>
+      </div>
+      <p class="dialog-note">
+        接口记录：Axios 使用 @h5-log/sdk/axios；fetch 可通过 captureFetch 开启。
+      </p>
+    </dialog>
+    <dialog id="service-dialog" class="tool-dialog">
+      <div class="dialog-heading">
+        <h2>日志服务</h2>
+        <button data-close="service-dialog" aria-label="关闭服务状态">×</button>
+      </div>
+      <div id="service-content" role="status"></div>
+      <div class="dialog-actions">
+        <span>重启清空，容量不足先淘汰旧记录</span
+        ><button id="service-refresh">刷新状态</button>
+      </div>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

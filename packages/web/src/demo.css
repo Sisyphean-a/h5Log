@@ -1,0 +1,68 @@
+.demo-shell {
+  width: min(660px, 100%);
+  margin: 65px auto;
+  padding: 0 24px;
+}
+.demo-back {
+  display: inline-block;
+  color: #829389;
+  margin-bottom: 45px;
+  font-size: 12px;
+}
+.demo-description {
+  color: #8a9590;
+  font-size: 12px;
+  margin: 15px 0 30px;
+  line-height: 1.8;
+}
+.demo-card {
+  background: #fff;
+  border: 1px solid #e0e6e1;
+  border-radius: 8px;
+  padding: 22px;
+  margin-top: 15px;
+}
+.demo-card > label {
+  display: block;
+  color: #7a887f;
+  font-size: 11px;
+  margin-bottom: 13px;
+}
+.demo-card input {
+  width: 100%;
+  height: 38px;
+  border: 1px solid #dfe5e0;
+  border-radius: 5px;
+  padding: 0 12px;
+  color: #58685e;
+  background: #fcfdfc;
+}
+.demo-actions {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.demo-actions button {
+  background: #eef2ef;
+  color: #647b6b;
+  border: 1px solid #dfe7e1;
+  padding: 8px 12px;
+  font-size: 11px;
+}
+.demo-card pre {
+  font: 11px/1.8 var(--mono);
+  color: #869187;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 20px 0 0;
+}
+.demo-status {
+  font-size: 10px;
+  color: #96a198;
+  margin-top: 22px;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}

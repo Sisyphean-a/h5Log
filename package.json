@@ -1,0 +1,30 @@
+{
+  "name": "h5-log",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": "^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "dev": "npm run build -w @h5-log/sdk && node scripts/dev.mjs",
+    "build": "npm run build -w @h5-log/sdk && npm run build -w @h5-log/web && npm run build -w @h5-log/server",
+    "start": "node packages/server/dist/cli.js",
+    "pack:sdk": "npm run build -w @h5-log/sdk && npm pack -w @h5-log/sdk",
+    "typecheck": "npm run build -w @h5-log/sdk && tsc --noEmit -p packages/sdk && tsc --noEmit -p packages/server && tsc --noEmit -p packages/web",
+    "test": "npm run build -w @h5-log/sdk && vitest run",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "axios": "1.21.1",
+    "jsdom": "31.0.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}

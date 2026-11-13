@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>H5 Log · 接入演示</title>
+  </head>
+  <body>
+    <main class="demo-shell">
+      <a class="demo-back" href="/" target="_blank" rel="noopener"
+        >← 日志工作台</a
+      >
+      <div class="eyebrow">SDK DEMO</div>
+      <h1>接入演示</h1>
+      <p class="demo-description">在另一个窗口打开工作台，选择“浏览器演示”。</p>
+      <section class="demo-card">
+        <label for="demo-message">日志内容</label
+        ><input id="demo-message" value="开始一次 H5 测试" autocomplete="off" />
+        <div class="demo-actions">
+          <button id="demo-log">发送日志</button
+          ><button id="demo-warn">发送警告</button
+          ><button id="demo-error">发送异常</button
+          ><button id="demo-object">循环引用对象</button>
+        </div>
+      </section>
+      <section class="demo-card">
+        <label>接口记录</label>
+        <div class="demo-actions">
+          <button id="demo-request">成功请求</button
+          ><button id="demo-failed-request">失败请求</button>
+        </div>
+        <pre id="demo-result">尚未发起请求</pre>
+      </section>
+      <footer class="demo-status">
+        <span id="demo-client"></span
+        ><span id="demo-status" role="status"></span>
+      </footer>
+    </main>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>
