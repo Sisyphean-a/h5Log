@@ -35,6 +35,13 @@ SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一�
 
 只需要部署一个 Node.js 服务，页面随服务一起提供。运行时不需要数据库、WebSocket 或 `node_modules`。可直接复制构建后的 `packages/app/dist` 到服务器运行，或使用随仓库提供的 Dockerfile：
 
+```sh
+docker build -t h5-log .
+docker run --rm -p 3000:3000 h5-log
+```
+
+镜像内固定 `HOST=0.0.0.0`、`PORT=3000`，以非 root 用户运行；日志只在容器进程内存，不挂载持久卷。只改宿主机端口时用 `-p 8080:3000`，健康检查跟随容器内的 `PORT`。
+
 SDK 接入步骤见 [SDK 说明](packages/sdk/README.md)。接入其他 H5 项目时先打包：
 
 ```sh
@@ -42,13 +49,6 @@ npm run pack:sdk
 ```
 
 在目标项目安装生成的 `h5-log-sdk-0.1.0.tgz`，无需先发布 npm。该包是 ESM，适合现有 Vite 项目。
-
-```sh
-docker build -t h5-log .
-docker run --rm -p 3000:3000 -e PORT=3000 h5-log
-```
-
-容器默认以非 root 用户监听 `0.0.0.0:3000`；日志只在容器进程内存，不挂载持久卷。
 
 ## 日志规则
 
