@@ -20,12 +20,16 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "6.0.11",
+    "@vue/test-utils": "2.4.6",
     "axios": "1.21.1",
     "fake-indexeddb": "6.2.8",
     "jsdom": "31.0.0",
+    "naive-ui": "2.45.3",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.8",
-    "vitest": "5.1.0"
+    "vitest": "5.1.0",
+    "vue": "3.5.45"
   }
 }

@@ -1,4 +1,4 @@
-import "./style.css";
+import "./base.css";
 import "./demo.css";
 import axios from "axios";
 import { createLogger } from "@h5-log/sdk";
