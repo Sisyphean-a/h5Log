@@ -95,8 +95,8 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   await vi.waitFor(() =>
     expect(wrapper.findAll(".log-row")).toHaveLength(2),
   );
-  // 单设备聚焦：状态栏展示选中的客户端，而不是“全部客户端”
-  expect(wrapper.find(".status-bar .scope").text()).toContain("测试手机");
+  // 单设备聚焦：客户端选择器展示选中的设备，而不是“全部客户端”
+  expect(wrapper.find(".client-select").text()).toContain("测试手机");
   await vi.waitFor(() =>
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("clientKey=client-a"))).toBe(true),
   );

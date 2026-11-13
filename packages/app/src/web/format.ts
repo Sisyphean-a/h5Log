@@ -98,3 +98,75 @@ export function jsonText(value: unknown): string {
     return String(value);
   }
 }
+
+export type JsonTokenKind = "key" | "string" | "number" | "literal" | "punct" | "plain";
+
+export interface JsonToken {
+  kind: JsonTokenKind;
+  text: string;
+}
+
+const JSON_ESCAPE = /^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/;
+
+/**
+ * Rule: JSON 文本由本模块自己序列化，按词法切分即可高亮；不做 HTML 拼接，渲染层用文本节点。
+ * Failure: 超过上限或非 JSON 文本退化为单个 plain token，避免生成数千个节点。
+ */
+export function jsonTokens(text: string, limit = 20000): JsonToken[] {
+  if (text.length > limit) return [{ kind: "plain", text }];
+  const tokens: JsonToken[] = [];
+  let index = 0;
+  let plainStart = 0;
+  const flushPlain = (end: number): void => {
+    if (end > plainStart) tokens.push({ kind: "plain", text: text.slice(plainStart, end) });
+  };
+  const push = (kind: JsonTokenKind, end: number): void => {
+    flushPlain(index);
+    tokens.push({ kind, text: text.slice(index, end) });
+    index = end;
+    plainStart = end;
+  };
+
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '"') {
+      let end = index + 1;
+      while (end < text.length) {
+        if (text[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        if (text[end] === '"') {
+          end += 1;
+          break;
+        }
+        end += 1;
+      }
+      let next = end;
+      while (next < text.length && /\s/.test(text[next]!)) next += 1;
+      push(text[next] === ":" ? "key" : "string", end);
+      continue;
+    }
+    if (char === "-" || (char >= "0" && char <= "9")) {
+      const match = JSON_ESCAPE.exec(text.slice(index));
+      if (match) {
+        push("number", index + match[0].length);
+        continue;
+      }
+    }
+    const literal = ["true", "false", "null"].find((item) =>
+      text.startsWith(item, index),
+    );
+    if (literal) {
+      push("literal", index + literal.length);
+      continue;
+    }
+    if ("{}[],:".includes(char)) {
+      push("punct", index + 1);
+      continue;
+    }
+    index += 1;
+  }
+  flushPlain(text.length);
+  return tokens;
+}
