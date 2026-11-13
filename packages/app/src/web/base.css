@@ -1,18 +1,26 @@
 :root {
-  font-family: Inter, "Segoe UI", sans-serif;
+  --font-sans: "Aptos", "Noto Sans SC", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-family: var(--font-sans);
   font-size: 14px;
-  color: #303b36;
-  background: #f4f6f5;
-  --accent: #4a6b58;
-  --muted: #88938d;
-  --line: #e3e8e4;
-  --mono: "JetBrains Mono", Consolas, monospace;
+  font-synthesis: none;
+  color-scheme: light;
+  color: #17243a;
+  background: #eef2f6;
+  --accent: #3568d4;
+  --muted: #52647d;
+  --line: #d9e1eb;
+  --mono: var(--font-mono);
 }
 * {
   box-sizing: border-box;
 }
-body {
+/* Rule: 覆盖组件库运行时注入的 body 默认字体，弹出层也沿用参考字体。 */
+html body {
   margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 button,
 input,
@@ -23,14 +31,14 @@ button {
   cursor: pointer;
   border: 0;
   background: none;
-  color: #67776e;
+  color: #52647d;
   border-radius: 5px;
   padding: 8px 11px;
   white-space: nowrap;
 }
 button:hover:not(:disabled) {
-  background: #eaf0ec;
-  color: #314d3c;
+  background: #edf3ff;
+  color: #2856b7;
 }
 button:disabled {
   cursor: default;
@@ -41,7 +49,7 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
-  outline: 2px solid #6f927b;
+  outline: 2px solid #4b7de5;
   outline-offset: 3px;
 }
 a {
@@ -50,10 +58,10 @@ a {
 }
 select {
   height: 36px;
-  border: 1px solid #dce3de;
+  border: 1px solid #d9e1eb;
   border-radius: 5px;
   background: #fff;
-  color: #5f6d64;
+  color: #52647d;
   padding: 0 28px 0 11px;
   max-width: 200px;
 }
@@ -76,6 +84,6 @@ h1 {
 .eyebrow {
   font: 10px var(--mono);
   letter-spacing: 2px;
-  color: #839a8a;
+  color: #52647d;
   margin-bottom: 10px;
 }
