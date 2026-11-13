@@ -9,10 +9,10 @@ import type {
 import { randomUUID } from "node:crypto";
 
 export const RETENTION_HOURS = 12;
-const RETENTION_MS = RETENTION_HOURS * 60 * 60 * 1000;
 export interface StoreOptions {
   maxLogs?: number;
   maxBytes?: number;
+  retentionHours?: number;
   now?: () => number;
 }
 export interface LogFilter {
@@ -35,6 +35,8 @@ interface Entry {
 
 export class LogStore {
   readonly serverId = randomUUID();
+  readonly retentionHours: number;
+  private readonly retentionMs: number;
   private readonly entries: (Entry | undefined)[] = [];
   private readonly eventKeys = new Set<string>();
   private readonly clientMap = new Map<string, LogClient>();
@@ -49,12 +51,15 @@ export class LogStore {
   private evictedThroughId = 0;
 
   constructor(options: StoreOptions = {}) {
-    this.maxLogs = options.maxLogs ?? 20000;
-    this.maxBytes = options.maxBytes ?? 32 * 1024 * 1024;
+    this.maxLogs = options.maxLogs ?? 2000;
+    this.maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
+    this.retentionHours = options.retentionHours ?? RETENTION_HOURS;
+    this.retentionMs = this.retentionHours * 60 * 60 * 1000;
     this.now = options.now ?? Date.now;
     for (const [key, value] of Object.entries({
       maxLogs: this.maxLogs,
       maxBytes: this.maxBytes,
+      retentionHours: this.retentionHours,
     })) {
       if (!Number.isSafeInteger(value) || value <= 0)
         throw new Error(`${key} 必须为正整数`);
@@ -112,7 +117,7 @@ export class LogStore {
   }
 
   expiryCutoff(): number {
-    return this.now() - RETENTION_MS;
+    return this.now() - this.retentionMs;
   }
 
   prune(): void {
@@ -208,7 +213,7 @@ export class LogStore {
       total,
       cursor: this.sequence,
       hasMore: found.length > limit,
-      retentionHours: RETENTION_HOURS,
+      retentionHours: this.retentionHours,
       serverId: this.serverId,
     };
   }

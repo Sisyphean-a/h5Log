@@ -150,7 +150,7 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
       received: 4,
       evicted: 0,
       retentionHours: 12,
-      limits: { maxLogs: 20000, maxSubscribers: 50 },
+      limits: { maxLogs: 2000, maxSubscribers: 50 },
     });
   });
 
@@ -257,6 +257,17 @@ describe("12 小时与内存淘汰规则", () => {
     now++;
     expect(store.page().logs).toHaveLength(0);
     expect(store.clients()).toHaveLength(0);
+  });
+
+  it("保留时长可配置，按传入小时数过期", () => {
+    let now = 0;
+    const store = new LogStore({ now: () => now, retentionHours: 1 });
+    store.add([event()]);
+    now = 60 * 60 * 1000 - 1;
+    expect(store.page().logs).toHaveLength(1);
+    now++;
+    expect(store.page().logs).toHaveLength(0);
+    expect(store.page().retentionHours).toBe(1);
   });
 
   it("容量不足时先淘汰最旧记录，并清理相关客户端", () => {

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import { CONTEXT_LIMITS, MAX_BATCH_EVENTS, MAX_EVENT_BYTES } from "@h5-log/sdk";
 import type { LogEvent } from "@h5-log/sdk";
-import { LogStore, RETENTION_HOURS } from "./store.js";
+import { LogStore } from "./store.js";
 import type { LogFilter } from "./store.js";
 export { LogStore } from "./store.js";
 
@@ -204,7 +204,7 @@ export function createLogServer(options: ServerOptions = {}) {
           now: Date.now(),
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
           subscribers: subscribers.size,
-          retentionHours: RETENTION_HOURS,
+          retentionHours: store.retentionHours,
           limits: {
             ...stats.limits,
             maxSubscribers,

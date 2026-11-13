@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "npm run build -w @h5-log/sdk && node scripts/dev.mjs",
     "build": "npm run build -w @h5-log/sdk && npm run build -w @h5-log/app",
-    "start": "node packages/app/dist/server/cli.js",
+    "start": "node packages/app/dist/server/cli.mjs",
     "pack:sdk": "npm run build -w @h5-log/sdk && npm pack -w @h5-log/sdk",
     "typecheck": "npm run build -w @h5-log/sdk && tsc --noEmit -p packages/sdk && tsc --noEmit -p packages/app && tsc --noEmit -p packages/app/tsconfig.server.json",
     "test": "npm run build -w @h5-log/sdk && vitest run",

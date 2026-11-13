@@ -29,11 +29,11 @@ npm run dev
 | `packages/sdk` · `@h5-log/sdk` | console、JS 异常采集、独立上传、Axios 与可选 fetch 接入     |
 | `packages/app` · `@h5-log/app` | 日志服务（接收、内存保留、查询、SSE）与工作台页面，构建为同一个产物 |
 
-`packages/app` 内部 `src/server` 是 Node.js 日志服务，`src/web` 是 Vite 构建的工作台，构建后输出 `dist/server` 与 `dist/web`；服务进程直接托管 `dist/web`。
+`packages/app` 内部 `src/server` 是 Node.js 日志服务，`src/web` 是 Vite 构建的工作台。构建输出 `dist/server/cli.mjs`（自包含单文件，只依赖 Node 内置模块）与 `dist/web`，服务进程直接托管 `dist/web`；部署时只需 `dist` 目录，不需要 `node_modules`。
 
 SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一起部署。
 
-只需要部署一个 Node.js 服务，页面随服务一起提供。运行时服务不需要数据库，也不依赖 WebSocket。可直接运行 Node 服务，或使用随仓库提供的 Dockerfile：
+只需要部署一个 Node.js 服务，页面随服务一起提供。运行时不需要数据库、WebSocket 或 `node_modules`。可直接复制构建后的 `packages/app/dist` 到服务器运行，或使用随仓库提供的 Dockerfile：
 
 SDK 接入步骤见 [SDK 说明](packages/sdk/README.md)。接入其他 H5 项目时先打包：
 
@@ -45,7 +45,7 @@ npm run pack:sdk
 
 ```sh
 docker build -t h5-log .
-docker run --rm -p 3000:3000 -e PORT=3000 -e MAX_LOGS=20000 -e MAX_MEMORY_MB=32 h5-log
+docker run --rm -p 3000:3000 -e PORT=3000 h5-log
 ```
 
 容器默认以非 root 用户监听 `0.0.0.0:3000`；日志只在容器进程内存，不挂载持久卷。
@@ -55,7 +55,7 @@ docker run --rm -p 3000:3000 -e PORT=3000 -e MAX_LOGS=20000 -e MAX_MEMORY_MB=32 
 - 仅在 H5 显式启用 SDK 时采集，生产构建应保持关闭。
 - 测试数据原样采集，不脱敏。普通长桥接报文不会被 SDK 替换成 256 字符摘要；已有业务代码的摘要需要在接入时调整。
 - 服务端按**接收时间**保留最近 12 小时；服务器重启后日志清空。
-- 默认最多保留 20,000 条、32 MiB 的日志序列化数据，先达到哪个限制就先淘汰最旧记录。这不是 Node.js 进程总内存限制，也不保证完整存满 12 小时。
+- 默认最多保留 2,000 条、4 MiB 的日志序列化数据，先达到哪个限制就先淘汰最旧记录。这不是 Node.js 进程总内存限制，也不保证完整存满 12 小时。需要更大窗口时调高 `MAX_LOGS`/`MAX_MEMORY_MB`。
 - “客户端”是应用、环境和浏览器存储中的随机标识组合，不是 Android 硬件身份。页面每次初始化产生新会话。
 - 页面显示“最近上报”，不将没有产生新日志误报为设备离线。
 - 每页 200 条，可翻阅更早的保留日志；会话列表覆盖当前客户端范围内所有保留会话。暂停自动滚动仍接收日志，清空视图不删除服务器记录。筛选条件保存在地址栏，刷新后可恢复。
@@ -69,15 +69,20 @@ docker run --rm -p 3000:3000 -e PORT=3000 -e MAX_LOGS=20000 -e MAX_MEMORY_MB=32 
 
 完成 `npm ci && npm run build` 后运行 `npm start`。默认监听 `127.0.0.1:3000`，适合由同机 Nginx 提供 HTTPS 入口。
 
+无 Docker 时只需把 `packages/app/dist` 拷到服务器，用 `node dist/server/cli.mjs` 启动（需要 Node.js 24.15+）。`dist` 包含自包含的服务进程和页面资产，不含第三方依赖。
+
 可设置环境变量：
 
-| 变量              | 默认值      | 含义                                   |
-| ----------------- | ----------- | -------------------------------------- |
-| `HOST`            | `127.0.0.1` | 监听地址，局域网直连可改为 `0.0.0.0`   |
-| `PORT`            | `3000`      | 监听端口                               |
-| `MAX_LOGS`        | `20000`     | 内存日志条数上限                       |
-| `MAX_MEMORY_MB`   | `32`        | 内存日志序列化数据大小上限             |
-| `ALLOWED_ORIGINS` | `*`         | 允许上传的页面来源；多个来源用逗号分隔 |
+| 变量               | 默认值      | 含义                                   |
+| ------------------ | ----------- | -------------------------------------- |
+| `HOST`             | `127.0.0.1` | 监听地址，局域网直连可改为 `0.0.0.0`   |
+| `PORT`             | `3000`      | 监听端口                               |
+| `MAX_LOGS`         | `2000`      | 内存日志条数上限                       |
+| `MAX_MEMORY_MB`    | `4`         | 内存日志序列化数据大小上限             |
+| `RETENTION_HOURS`  | `12`        | 保留时长（小时，可降到 1–2 省内存）    |
+| `ALLOWED_ORIGINS`  | `*`         | 允许上传的页面来源；多个来源用逗号分隔 |
+
+默认配置下进程约 30–35 MiB，突刺上传峰值约 100 MiB 并会回落。需要更硬的堆上限可加 `--max-old-space-size=64 --max-semi-space-size=8`；调大 `MAX_MEMORY_MB` 时要同步放宽该上限，否则会 OOM。
 
 在已有 HTTPS 的 Nginx `server` 中代理到服务：
 
