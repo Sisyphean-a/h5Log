@@ -7,6 +7,7 @@ import type {
   StoredLog,
 } from "@h5-log/sdk";
 import { randomUUID } from "node:crypto";
+import { createLogMatcher, type LogFilter as EventFilter } from "../log-filter.js";
 
 export const RETENTION_HOURS = 12;
 export interface StoreOptions {
@@ -15,14 +16,7 @@ export interface StoreOptions {
   retentionHours?: number;
   now?: () => number;
 }
-export interface LogFilter {
-  appId?: string;
-  environment?: string;
-  clientKey?: string;
-  sessionId?: string;
-  level?: string;
-  source?: string;
-  search?: string;
+export interface LogFilter extends EventFilter {
   before?: number;
   after?: number;
   limit?: number;
@@ -156,18 +150,10 @@ export class LogStore {
     return [...this.clientMap.values()].sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
-  private inScope(log: StoredLog, filter: LogFilter): boolean {
-    return (
-      (!filter.appId || log.appId === filter.appId) &&
-      (!filter.environment || log.environment === filter.environment) &&
-      (!filter.clientKey || log.clientKey === filter.clientKey)
-    );
-  }
-
   page(filter: LogFilter = {}): LogPage {
     this.prune();
     const limit = Math.min(200, Math.max(1, filter.limit ?? 200));
-    const query = filter.search?.trim().toLocaleLowerCase();
+    const matcher = createLogMatcher(filter);
     const found: StoredLog[] = [];
     const sessions = new Map<string, LogSession>();
     let total = 0;
@@ -175,7 +161,7 @@ export class LogStore {
       const entry = this.entries[i];
       if (!entry) continue;
       const log = entry.log;
-      if (!this.inScope(log, filter)) continue;
+      if (!matcher.inScope(log)) continue;
       // Rule: 会话列表属于客户端范围，不被当前级别、关键词和分页截断。
       const key = JSON.stringify([log.clientKey, log.sessionId]);
       const session = sessions.get(key);
@@ -194,14 +180,7 @@ export class LogStore {
           pageUrl: log.pageUrl,
         });
       if (filter.after !== undefined && log.id <= filter.after) continue;
-      if (filter.sessionId && log.sessionId !== filter.sessionId) continue;
-      if (filter.level && log.level !== filter.level) continue;
-      if (filter.source && log.source !== filter.source) continue;
-      if (
-        query &&
-        !JSON.stringify(log.args).toLocaleLowerCase().includes(query)
-      )
-        continue;
+      if (!matcher.matches(log)) continue;
       total++;
       if (filter.before !== undefined && log.id >= filter.before) continue;
       if (found.length <= limit) found.push(log);

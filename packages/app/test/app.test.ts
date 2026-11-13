@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { afterEach, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import type { LogClient, LogPage, StoredLog } from "@h5-log/sdk";
 import App from "../src/web/App.vue";
 
@@ -44,7 +44,7 @@ class Stream extends EventTarget {
     super();
     Stream.instances.push(this);
   }
-  close() {}
+  close = vi.fn();
   emit(name: string, data: unknown) {
     this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) }));
   }
@@ -111,4 +111,36 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   expect(wrapper.text()).not.toContain("无关日志");
 
   wrapper.unmount();
+});
+
+it("页面进入后退缓存时暂存工作台，返回后读取新日志并忽略旧连接事件", async () => {
+  let logs = [log(1, "暂存前的日志")];
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true,
+    json: async () => pageBody(logs),
+  })));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await flushPromises();
+    await vi.waitFor(() => expect(wrapper.text()).toContain("暂存前的日志"));
+    const previous = Stream.instances.at(-1)!;
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    expect(previous.close).toHaveBeenCalledOnce();
+
+    logs = [log(2, "恢复后的新日志")];
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(wrapper.text()).toContain("恢复后的新日志"));
+    expect(Stream.instances.at(-1)).not.toBe(previous);
+    previous.emit("logs", {
+      logs: [log(99, "旧连接的迟到日志")],
+      clients: [client],
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("暂存前的日志");
+    expect(wrapper.text()).not.toContain("旧连接的迟到日志");
+    expect(wrapper.findAll(".log-row")).toHaveLength(1);
+  } finally {
+    wrapper.unmount();
+  }
 });

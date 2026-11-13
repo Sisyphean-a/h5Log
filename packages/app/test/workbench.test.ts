@@ -1,8 +1,9 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LogClient, LogPage, LogSession, StoredLog } from "@h5-log/sdk";
-import { createWorkbench } from "../src/web/workbench.js";
+import { createWorkbench, type FilterState } from "../src/web/workbench.js";
 import { createLocalHistory, type LocalHistory } from "../src/web/history.js";
+import { LogStore } from "../src/server/store.js";
 
 const client: LogClient = {
   key: "client-a",
@@ -80,6 +81,14 @@ function response(body: LogPage | unknown) {
   return { ok: true, json: async () => body } as unknown as Response;
 }
 
+class Stream extends EventTarget {
+  close = vi.fn();
+
+  emit(name: string, data: unknown): void {
+    this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) }));
+  }
+}
+
 let workbench: ReturnType<typeof createWorkbench> | undefined;
 let history: LocalHistory | undefined;
 
@@ -92,6 +101,117 @@ afterEach(() => {
 });
 
 describe("工作台状态", () => {
+  it("暂存后恢复当前历史页，忽略旧连接和迟到响应，最终销毁后不再恢复", async () => {
+    let finish!: (value: Response) => void;
+    const streams: Stream[] = [];
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(response(page([log(10)], 10, { hasMore: true })))
+      .mockResolvedValueOnce(response(page([log(5)], 10)))
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => { finish = resolve; }),
+      )
+      .mockResolvedValue(response(page([log(6)], 12)));
+    workbench = createWorkbench({
+      fetchImpl,
+      openStream: () => {
+        const stream = new Stream();
+        streams.push(stream);
+        return stream;
+      },
+    });
+    workbench.connect();
+    await workbench.load();
+    await workbench.loadOlder();
+    const stale = workbench.load(10);
+    workbench.suspend();
+    expect(streams[0]!.close).toHaveBeenCalledOnce();
+    expect(workbench.state.loading).toBe(false);
+
+    workbench.resume();
+    await vi.waitFor(() =>
+      expect(workbench!.state.logs.map((item) => item.id)).toEqual([6]),
+    );
+    expect(String(fetchImpl.mock.calls[3]![0])).toContain("before=10");
+    finish(response(page([log(4)], 11)));
+    await stale;
+    streams[0]!.emit("logs", { logs: [log(99)], clients: [client] });
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([6]);
+    expect(workbench.state.loading).toBe(false);
+
+    workbench.dispose();
+    workbench.resume();
+    workbench.connect();
+    await workbench.load();
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(streams).toHaveLength(2);
+    expect(streams[1]!.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["appId", "environment", "clientKey"] as const)(
+    "%s 范围在快照、两种实时状态和本地历史中一致，会话统计不受日志筛选影响",
+    async (scope) => {
+      const now = Date.now();
+      const store = new LogStore({ now: () => now });
+      const seed = store.add([{ ...log(1), args: ["订单"] }])[0]!;
+      const filter: Partial<FilterState> = {
+        [scope]: seed[scope],
+        sessionId: seed.sessionId,
+        level: "info",
+        source: "console",
+        search: " 订单 ",
+      };
+      const snapshot = store.page(filter);
+      const outside = scope === "appId"
+        ? { appId: "other-app" }
+        : scope === "environment"
+          ? { environment: "other-environment" }
+          : { deviceId: "other-device" };
+      let finish!: (value: Response) => void;
+      const stream = new Stream();
+      history = createLocalHistory()!;
+      workbench = createWorkbench({
+        history,
+        openStream: () => stream,
+        fetchImpl: vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })),
+      });
+      workbench.connect();
+      workbench.setFilter(filter);
+      stream.emit("logs", {
+        logs: store.add([{ ...log(2), ...outside, args: ["订单"] }]),
+        clients: store.clients(),
+      });
+      finish(response(snapshot));
+      await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+
+      const incoming = store.add([
+        { ...log(3), ...outside, args: ["订单"] },
+        { ...log(4), sessionId: "other-session", level: "error", source: "http", args: ["其他内容"] },
+        { ...log(5), args: ["订单"] },
+      ]);
+      stream.emit("logs", { logs: incoming, clients: store.clients() });
+      const expected = store.page(filter);
+      const counts = (sessions: LogSession[]) => new Map(sessions.map((session) => [
+        JSON.stringify([session.clientKey, session.sessionId]),
+        { logs: session.logCount, errors: session.errorCount },
+      ]));
+      expect(workbench.state.logs).toEqual(expected.logs);
+      expect(workbench.state.total).toBe(expected.total);
+      expect(counts(workbench.state.sessions)).toEqual(counts(expected.sessions));
+      expect(workbench.state.sessions).toHaveLength(2);
+      expect(workbench.state.cursor).toBe(expected.cursor);
+
+      await workbench.loadLocal(100);
+      expect(workbench.state.localMode).toBe(true);
+      expect(workbench.state.logs).toEqual(expected.logs);
+      workbench.suspend();
+      workbench.resume();
+      await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+      expect(workbench.state.localMode).toBe(true);
+      expect(workbench.state.logs).toEqual(expected.logs);
+    },
+  );
+
   it("快照游标内的迟到事件不计入会话，新事件只计一次", async () => {
     const workbench = createWorkbench({
       fetchImpl: vi.fn().mockResolvedValue(response(page([log(10, "error")], 10))),

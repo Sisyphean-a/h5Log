@@ -1,4 +1,4 @@
-import { reactive } from "vue";
+import { computed, reactive } from "vue";
 import type {
   ClientUpdate,
   LogClient,
@@ -10,16 +10,9 @@ import type {
 } from "@h5-log/sdk";
 import type { LocalHistory } from "./history.js";
 import { requestIdOf } from "./format.js";
+import { createLogMatcher, type LogFilter } from "../log-filter.js";
 
-export interface FilterState {
-  appId: string;
-  environment: string;
-  clientKey: string;
-  sessionId: string;
-  level: string;
-  source: string;
-  search: string;
-}
+export type FilterState = Required<LogFilter>;
 
 export type Connection = "connecting" | "open" | "offline";
 
@@ -111,7 +104,9 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   let pendingOverflow = false;
   let pendingInvalidated = false;
   let historyBefore: number | undefined;
-  let disposed = false;
+  let lifecycle: "active" | "suspended" | "disposed" = "active";
+  let lifecycleVersion = 0;
+  const matcher = computed(() => createLogMatcher(state.filter));
 
   function notice(message: string, error = false): void {
     clearTimeout(noticeTimer);
@@ -124,22 +119,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function matches(log: StoredLog): boolean {
-    const filter = state.filter;
-    return (
-      (!filter.appId || log.appId === filter.appId) &&
-      (!filter.environment || log.environment === filter.environment) &&
-      (!filter.clientKey || log.clientKey === filter.clientKey) &&
-      (!filter.sessionId || log.sessionId === filter.sessionId) &&
-      (!filter.level || log.level === filter.level) &&
-      (!filter.source || log.source === filter.source) &&
-      log.id > state.clearAfter &&
-      (!filter.search ||
-        searchText(log).includes(filter.search.toLocaleLowerCase()))
-    );
-  }
-
-  function searchText(log: StoredLog): string {
-    return JSON.stringify(log.args).toLocaleLowerCase();
+    return log.id > state.clearAfter && matcher.value.matches(log);
   }
 
   function queryParams(): URLSearchParams {
@@ -175,6 +155,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   async function load(before?: number): Promise<void> {
+    if (lifecycle !== "active") return;
     const version = ++requestVersion;
     pageController?.abort();
     const controller = new AbortController();
@@ -197,7 +178,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const page = (await response.json()) as LogPage;
-      if (version !== requestVersion || disposed) return;
+      if (version !== requestVersion || lifecycle !== "active") return;
       if (state.serverId && state.serverId !== page.serverId) {
         resetForRestart(page.serverId);
         void load(before);
@@ -248,7 +229,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       else if (refreshSessions) void refreshSessionsIndex();
       else if (overflowed && before !== undefined) void load(before);
     } catch (error) {
-      if (version !== requestVersion) return;
+      if (version !== requestVersion || lifecycle !== "active") return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       state.loading = false;
       state.error = error instanceof Error ? error.message : "网络错误";
@@ -261,7 +242,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     if (!history || !oldest || state.localMode) return;
     const version = requestVersion;
     const has = await history.hasBefore(oldest.id, matches);
-    if (version !== requestVersion || state.loading || disposed) return;
+    if (version !== requestVersion || state.loading || lifecycle !== "active") return;
     if (has) state.serverHasMore = false;
   }
 
@@ -273,13 +254,13 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   async function loadLocal(before: number): Promise<void> {
-    if (!history) return;
+    if (!history || lifecycle !== "active") return;
     const version = ++requestVersion;
     pageController?.abort();
     state.loading = true;
     try {
       const result = await history.page({ before, limit: 200, accept: matches });
-      if (version !== requestVersion || disposed) return;
+      if (version !== requestVersion || lifecycle !== "active") return;
       state.loading = false;
       if (result.logs.length === 0) {
         notice("没有更早的本地历史：只保留当前浏览器看过的日志");
@@ -353,6 +334,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function handleLogs(batch: { logs: StoredLog[]; clients: LogClient[] }): void {
+    if (lifecycle !== "active") return;
     state.clients = batch.clients;
     history?.append(batch.logs);
     refreshRelatedDetail(batch.logs);
@@ -362,20 +344,13 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         log.id > (loading ? Math.max(state.cursor, pendingCursor) : state.cursor) &&
         !pendingEventIds.has(log.id),
     );
+    const scoped = unseen.filter(matcher.value.inScope);
     if (loading) {
       for (const log of unseen) {
         if (pendingEventIds.size < 20000) pendingEventIds.add(log.id);
         else pendingInvalidated = true;
         pendingCursor = Math.max(pendingCursor, log.id);
       }
-      const scoped = unseen.filter((log) => {
-        const filter = state.filter;
-        return (
-          (!filter.appId || log.appId === filter.appId) &&
-          (!filter.environment || log.environment === filter.environment) &&
-          (!filter.clientKey || log.clientKey === filter.clientKey)
-        );
-      });
       const sessionLogs = scoped.filter(
         (log) => !pendingScoped.some((item) => item.id === log.id),
       );
@@ -399,9 +374,9 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       pendingEventIds.delete(log.id);
     }
     const known = new Set(state.logs.map((log) => log.id));
-    const scoped = unseen.filter((log) => !known.has(log.id));
-    const fresh = scoped.filter(matches);
-    addSessions(scoped);
+    const sessionLogs = scoped.filter((log) => !known.has(log.id));
+    const fresh = sessionLogs.filter(matches);
+    addSessions(sessionLogs);
     if (state.localMode) {
       state.total += fresh.length;
       return;
@@ -432,6 +407,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function handleClients(update: ClientUpdate): void {
+    if (lifecycle !== "active") return;
     state.clients = update.clients;
     const cutoffChanged = update.evictedThroughId > state.evictedThroughId;
     state.evictedThroughId = Math.max(
@@ -462,6 +438,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function handleHello(hello: { serverId: string; clients: LogClient[] }): void {
+    if (lifecycle !== "active") return;
     const reconnect = state.streamReady;
     state.streamReady = true;
     if (state.serverId && state.serverId !== hello.serverId)
@@ -469,31 +446,43 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.serverId = hello.serverId;
     history?.setServerId(hello.serverId);
     state.clients = hello.clients;
-    if (reconnect) void load(historyBefore);
+    if (reconnect) reloadView();
+  }
+
+  function reloadView(): void {
+    if (state.localMode && historyBefore !== undefined)
+      void loadLocal(historyBefore);
+    else void load(historyBefore);
   }
 
   async function refreshSessionsIndex(): Promise<void> {
+    if (lifecycle !== "active") return;
+    const version = requestVersion;
     try {
       const params = queryParams();
       params.set("limit", "1");
       const response = await fetchImpl(`/api/logs?${params}`);
       if (!response.ok) return;
       const page = (await response.json()) as LogPage;
+      if (version !== requestVersion || lifecycle !== "active") return;
       state.sessions = page.sessions;
       state.clients = page.clients;
     } catch {
+      if (version !== requestVersion || lifecycle !== "active") return;
       notice("会话列表更新失败，请重新读取");
     }
   }
 
   async function openDetail(id: number): Promise<void> {
+    if (lifecycle !== "active") return;
+    const generation = lifecycleVersion;
     state.selectedId = id;
     const selected = state.logs.find((log) => log.id === id);
     try {
       const response = await fetchImpl(`/api/logs/${id}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const detail = (await response.json()) as LogDetail;
-      if (state.selectedId !== id) return;
+      if (generation !== lifecycleVersion || state.selectedId !== id) return;
       // Rule: 数字 id 会在重启后复用，只接受同一次事件的关联记录。
       if (
         selected &&
@@ -509,7 +498,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         related: detail.related,
       };
     } catch (error) {
-      if (state.selectedId !== id) return;
+      if (generation !== lifecycleVersion || state.selectedId !== id) return;
       notice(
         `读取详情失败：${error instanceof Error ? error.message : "记录可能已被淘汰"}`,
         true,
@@ -523,11 +512,16 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   async function loadService(): Promise<void> {
+    if (lifecycle !== "active") return;
+    const generation = lifecycleVersion;
     try {
       const response = await fetchImpl("/api/health");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      state.service = (await response.json()) as ServiceStatus;
+      const service = (await response.json()) as ServiceStatus;
+      if (generation !== lifecycleVersion) return;
+      state.service = service;
     } catch (error) {
+      if (generation !== lifecycleVersion) return;
       notice(
         `读取服务状态失败：${error instanceof Error ? error.message : "网络错误"}`,
         true,
@@ -536,20 +530,27 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function connect(): void {
+    if (lifecycle !== "active") return;
     stream?.close();
     state.connection = "connecting";
+    state.streamReady = false;
     const openStream =
       options.openStream ??
       ((url: string) => new EventSource(url) as unknown as StreamLike);
     const current = openStream("/api/stream");
     stream = current;
-    current.addEventListener("open", () => {
+    const listen = (type: string, listener: (event: Event) => void): void => {
+      current.addEventListener(type, (event) => {
+        if (lifecycle === "active" && stream === current) listener(event);
+      });
+    };
+    listen("open", () => {
       state.connection = "open";
     });
-    current.addEventListener("error", () => {
+    listen("error", () => {
       state.connection = "connecting";
     });
-    current.addEventListener("hello", (event) => {
+    listen("hello", (event) => {
       try {
         const data = JSON.parse((event as MessageEvent<string>).data) as {
           serverId: string;
@@ -560,7 +561,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         notice("实时数据格式异常，请刷新页面", true);
       }
     });
-    current.addEventListener("logs", (event) => {
+    listen("logs", (event) => {
       try {
         handleLogs(
           JSON.parse((event as MessageEvent<string>).data) as {
@@ -572,7 +573,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         notice("实时数据格式异常，请重新读取", true);
       }
     });
-    current.addEventListener("clients", (event) => {
+    listen("clients", (event) => {
       try {
         handleClients(
           JSON.parse((event as MessageEvent<string>).data) as ClientUpdate,
@@ -581,6 +582,19 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         notice("客户端列表更新失败");
       }
     });
+  }
+
+  function stopIO(): void {
+    ++lifecycleVersion;
+    ++requestVersion;
+    const previous = stream;
+    stream = undefined;
+    previous?.close();
+    pageController?.abort();
+    pageController = undefined;
+    state.loading = false;
+    state.connection = "offline";
+    clearTimeout(noticeTimer);
   }
 
   return {
@@ -603,15 +617,21 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     handleClients,
     handleHello,
     notice,
-    resume: () => {
+    suspend(): void {
+      if (lifecycle !== "active") return;
+      lifecycle = "suspended";
+      stopIO();
+    },
+    resume(): void {
+      if (lifecycle !== "suspended") return;
+      lifecycle = "active";
       connect();
-      void load(historyBefore);
+      reloadView();
     },
     dispose(): void {
-      disposed = true;
-      stream?.close();
-      pageController?.abort();
-      clearTimeout(noticeTimer);
+      if (lifecycle === "disposed") return;
+      lifecycle = "disposed";
+      stopIO();
     },
   };
 }

@@ -350,7 +350,7 @@ function onPageShow(event: PageTransitionEvent): void {
 }
 
 function onPageHide(event: PageTransitionEvent): void {
-  if (event.persisted) workbench.dispose();
+  if (event.persisted) workbench.suspend();
 }
 
 let media: MediaQueryList | undefined;
