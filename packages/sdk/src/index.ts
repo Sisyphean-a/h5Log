@@ -23,7 +23,7 @@ const MAX_QUEUE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_FLUSH_INTERVAL_MS = 250;
 const MIN_FLUSH_INTERVAL_MS = 50;
 
-/** Rule: 采样频繁的桥接与接口日志需要尽快上屏，默认 250ms 合批；过小会放大请求数。 */
+/** Rule: 高频 console 与接口日志默认 250ms 合批；过小会放大请求数。 */
 function flushInterval(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value))
     return DEFAULT_FLUSH_INTERVAL_MS;
@@ -52,7 +52,24 @@ function deviceId(appId: string): string {
   }
 }
 
-/** Rule: 默认由 enabled 显式开关控制；启用时一个页面只保留一个采集器。 */
+/**
+ * 创建测试环境日志采集器，仅需 enabled、appId、endpoint 三项配置。
+ *
+ * 启用后自动采集 console 和全局异常；桥接、业务输出继续使用原有 console，无需额外接入。
+ * Axios 使用 @h5-log/sdk/axios 的 attachAxiosLogger；原生 Fetch 设置 captureFetch: true。
+ * 设备和会话标识、快照、有限队列、合批及失败退避均由 SDK 管理，不阻塞业务等待上传。
+ *
+ * enabled 必须由接入项目显式判断，生产传 false；SDK 不自行识别构建环境。
+ * 配置无效时禁用并通过 getStatus().lastError 说明；一个页面只保留一个启用的采集器。
+ *
+ * @example
+ * const logger = createLogger({
+ *   enabled: import.meta.env.MODE === "test",
+ *   appId: "your-h5",
+ *   endpoint: "https://logs.example.com/api/logs",
+ * });
+ * // 既有 console.log/info/warn/error/debug 自动采集，包括桥接输出。
+ */
 export function createLogger(options: LoggerOptions): Logger {
   let active = options.enabled === true && typeof window !== "undefined";
   let lastError: string | null = null;

@@ -202,6 +202,10 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
       (await post([event(), event({ level: "invalid" as LogEvent["level"] })]))
         .status,
     ).toBe(400);
+    expect(
+      (await post([event(), event({ source: "bridge" as LogEvent["source"] })]))
+        .status,
+    ).toBe(400);
     expect((await page()).logs).toHaveLength(0);
     expect(
       (await post([event({ args: ["a".repeat(129 * 1024)] })])).status,

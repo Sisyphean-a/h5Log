@@ -10,7 +10,7 @@ export { LogStore } from "./store.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const levels = new Set(["debug", "info", "log", "warn", "error"]);
-const sources = new Set(["console", "error", "http", "bridge", "custom"]);
+const sources = new Set(["console", "error", "http", "custom"]);
 
 class HttpError extends Error {
   constructor(

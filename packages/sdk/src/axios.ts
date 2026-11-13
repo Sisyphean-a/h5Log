@@ -19,8 +19,17 @@ function readableBody(value: unknown): unknown {
 }
 
 /**
- * Flow: 在 adapter 边界记录已变换请求和原始响应，先于业务层解包。
- * Guarantee: 不改变配置、响应或错误；日志器抛错时也继续业务调用。
+ * 为已有 Axios 1.7+ 实例挂载接口采集，无需修改各处业务请求。
+ * 在请求转换后、响应转换及业务解包前记录参数、正文与耗时，以 requestId 关联收发。
+ * 上传由 SDK 独立完成，保持原业务响应和错误，采集失败不改变请求结果。
+ *
+ * 每个 Axios 实例挂载一次；重复挂载会替换上次安装。
+ * 仅包装默认 adapter；单次请求自定义 adapter 不采集，更换默认 adapter 后需重新挂载。
+ * 返回 detach 恢复原 adapter；停止日志采集时同时调用 detach() 和 logger.stop()。
+ *
+ * @example
+ * import { attachAxiosLogger } from "@h5-log/sdk/axios";
+ * const detach = attachAxiosLogger(axiosClient, logger);
  */
 export function attachAxiosLogger(
   instance: AxiosInstance,

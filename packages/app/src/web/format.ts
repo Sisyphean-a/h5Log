@@ -77,7 +77,6 @@ export const sourceLabels: Record<string, string> = {
   console: "控制台",
   error: "异常",
   http: "接口",
-  bridge: "桥接",
   custom: "自定义",
 };
 

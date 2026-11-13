@@ -1,46 +1,44 @@
 # @h5-log/sdk
 
-为测试环境 H5 采集 console、JavaScript 异常、接口记录和显式业务日志。不依赖 Vue；Axios 接入需要业务项目已有 Axios 1.7+。
+测试环境 H5 的远程日志 SDK，不依赖 Vue。接入只有两部分：普通日志使用已有 `console`，接口按项目使用的 Axios 或 Fetch 开启采集。全局异常默认自动采集。
 
-## 安装与初始化
+桥接输出也是普通 console 日志，不需要单独接入、分类或修改桥接收发代码。
 
-在本仓库运行 `npm run pack:sdk`，再在 H5 项目安装生成的包：
+## 1. 初始化：只需 3 项配置
+
+在 SDK 仓库运行 `npm run pack:sdk`，将新生成的 `h5-log-sdk-0.1.0.tgz` 复制到目标 H5 项目后安装：
 
 ```sh
-npm install E:/github/h5Log/h5-log-sdk-0.1.0.tgz
+npm install ./h5-log-sdk-0.1.0.tgz
 ```
 
-新增独立的 `src/app/remoteLog.ts`：
+新增 `src/app/remoteLog.ts`（以下以 Vite 为例）：
 
 ```ts
 import { createLogger } from "@h5-log/sdk";
 
 export const remoteLogger = createLogger({
-  enabled:
-    import.meta.env.MODE === "test" &&
-    import.meta.env.VITE_ENABLE_REMOTE_LOG === "true",
-  appId: "26",
-  environment: import.meta.env.MODE,
+  enabled: import.meta.env.MODE === "test",
+  appId: "your-h5",
   endpoint: import.meta.env.VITE_LOG_ENDPOINT,
-  deviceName: "26 测试手机",
-  captureFetch: false,
-  // 合批间隔：默认 250ms，越小越即时、请求数越多（最小 50ms）
-  flushIntervalMs: 250,
 });
 ```
 
-在 `.env.test` 中配置：
+在 `.env.test` 配置可从手机访问的日志服务地址：
 
 ```dotenv
-VITE_ENABLE_REMOTE_LOG=true
 VITE_LOG_ENDPOINT=https://你的日志域名/api/logs
 ```
 
-在应用入口尽早导入 `./app/remoteLog`。console 和全局异常会自动采集，业务中的 `console.log/info/warn/error/debug` 不需要逐处修改。生产环境保持关闭；未启用时 SDK 不改写 console，也不发起上传。
+在应用入口尽早导入 `./app/remoteLog`。已有 `console.log/info/warn/error/debug`（包含桥接和业务日志）、全局 JavaScript 错误及未处理的 Promise 拒绝自动采集，不需要逐处修改。
 
-## 接口采集
+`enabled` 由项目显式判断，生产必须为 `false`；SDK 不自行识别构建环境。未启用时不改写 console 或 Fetch，也不上传日志。HTTPS 页面应配置 HTTPS 日志地址。
 
-### Axios
+## 2. 接口：按实际请求方式接入
+
+### Axios：已有实例挂载一行
+
+需要业务项目已有 Axios 1.7+。在创建业务 Axios 实例后、发起请求前挂载：
 
 ```ts
 import { attachAxiosLogger } from "@h5-log/sdk/axios";
@@ -49,33 +47,41 @@ import { remoteLogger } from "@/app/remoteLog";
 const detach = attachAxiosLogger(axiosClient, remoteLogger);
 ```
 
-接入器包装实例的默认 adapter：请求在拦截器和请求转换后记录，响应在 Axios 响应转换和业务解包前记录；HTTP 错误也保留响应正文。请求、响应通过 `requestId` 对应。它不改变业务响应或错误，不使用业务请求通道上传日志。调用时单独指定 `adapter` 的请求首版不采集；更换默认 adapter 后需重新挂载。
+复用原实例，不为日志创建新实例，也不修改各处请求。多个 `axios.create()` 实例分别挂载一次；同一实例重复挂载会替换上次安装。
 
-### Fetch
+采集器包装默认 adapter，在请求转换后、响应转换及业务解包前记录参数和正文；HTTP 错误也保留响应正文，以 `requestId` 关联收发，保持原响应和错误。日志上传使用 SDK 独立通道。单次请求自定义 `adapter` 不采集；更换默认 adapter 后需重新挂载。
 
-在初始化时设置 `captureFetch: true`，SDK 会包装全局 `fetch`，记录请求参数、文本/JSON 响应和 HTTP 失败。`Request` 自带的流式正文不会克隆或读取，避免上传流被 tee 后在后台持续缓冲；需要采集普通文本/JSON 请求体时，显式传入有限大小的 `init.body`。二进制、SSE 和 ReadableStream 响应不读取正文。上传通道使用原生 fetch，不会被自身采集。
+接入前可用 `node -e "console.log(require('axios/package.json').version)"` 检查版本；低于 1.7 时不要挂载，此接入器依赖 Axios 根导出的 `getAdapter`。
 
-## 桥接与业务日志
+### Fetch：初始化加一个开关
 
-已有 console 桥接日志会随 console 自动上传。需要单独标为 Bridge 时，在桥接收发边界调用：
+使用原生 Fetch 请求时，在初始化选项中增加 `captureFetch: true`，无需改写业务请求。默认关闭，不使用 Fetch 时无需配置。
 
-```ts
-remoteLogger.record("bridge", "info", {
-  direction: "send",
-  payload: originalMessage,
-});
-```
+文本/JSON 响应克隆后有限读取，不阻塞业务读取原响应。`Request` 自带的流式正文不克隆或读取；需要采集普通请求体时通过 `init.body` 传入文本或 JSON 字符串。二进制、SSE 与请求流不读取正文。SDK 上传不会被自身递归采集。
 
-原生动作名、宿主对象和报文字段仍归业务包维护。若原有 console 已写出同一报文，选择其中一种记录方式，避免重复。SDK 记录调用时快照，不会恢复业务代码已经摘要或截断的内容；26 包接入时可以调整原有的长字符串摘要。
+## 通常不需要配置的选项
+
+| 选项 | 默认值与用途 |
+| --- | --- |
+| `environment` | `"test"`；区分多个测试环境时再设置实际环境名 |
+| `deviceName` | 空；需要自定义工作台显示名称时设置，设备和会话标识自动生成 |
+| `captureConsole` | `true`；自动采集已有 console 输出 |
+| `captureErrors` | `true`；自动采集全局错误与未处理的 Promise 拒绝 |
+| `captureFetch` | `false`；使用 Fetch 时开启 |
+| `flushIntervalMs` | `250`；合批间隔，限制在 50–10000ms，通常保持默认 |
+
+SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容无法恢复。日常输出继续使用 console，底层 `record()` 不是普通日志接入的必需步骤。
 
 ## 生命周期与故障
 
-- `remoteLogger.context`：当前应用、客户端和页面会话信息。
-- `await remoteLogger.flush()`：尝试发送当前一批日志；退避期间不强制重试，上传异常不向业务抛出。
-- `remoteLogger.getStatus()`：读取是否启用、队列长度、已发送数量、丢弃数量、最近错误、退避时间和当前状态。
-- `remoteLogger.stop()`：移除 console、全局异常、fetch 监听和定时器，取消上传并清空待发送队列。需要尝试发送剩余日志时先调用 `flush()`。
-- `detach()`：恢复 Axios 原默认 adapter；停止采集时同时调用。
+- `remoteLogger.context`：只读应用、设备和当前页面会话信息。
+- `remoteLogger.getStatus()`：查看启用状态、队列、发送/丢弃数量、最近错误及退避状态。配置无效时采集器会禁用，原因在 `lastError` 中。
+- `await remoteLogger.flush()`：尝试发送当前一批；退避期间不强制重试，失败不向业务抛出，不保证清空全部队列。
+- `remoteLogger.stop()`：恢复 console、Fetch 与异常监听，清除定时器，取消上传并清空队列；需要尝试发送剩余日志时先调用 `flush()`。
+- Axios 挂载独立管理；停止采集时同时调用返回的 `detach()` 和 `remoteLogger.stop()`。
 
-一个页面同时保留一个启用的采集器；重复初始化会停止旧采集器。客户端随机 ID 按应用保存在当前来源的 localStorage 中，localStorage 不可用时仅保证本次运行可用。
+一个页面只保留一个启用的采集器，重复初始化会停止旧采集器；旧的 Axios 挂载需要解绑并为新采集器重新挂载。设备随机 ID 按应用保存在当前来源的 localStorage 中，存储不可用时仅保证本次运行可用。
 
-SDK 的资源限制、服务端 12 小时内存保留及部署方法见[项目说明](../../README.md#日志规则)。
+队列最多 1,000 条 / 4 MiB，每批最多 50 条；上传失败按 1–30 秒退避，网络恢复后立即尝试。单条日志最多 128 KiB，快照最多展开 12 层、处理 2,000 个值并保留合计 64K 字符的字符串，超限会留下可见标记。页面退出、WebView 被终止或服务不可达时允许丢失，不提供持久化补发。
+
+`createLogger`、`LoggerOptions`、`Logger` 和接口接入器的说明及默认值随包保留在 `dist/*.js` 与 `dist/*.d.ts` 中，可直接阅读 SDK 或使用编辑器类型提示，无需先查阅此文档。

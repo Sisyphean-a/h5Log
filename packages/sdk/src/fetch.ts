@@ -54,7 +54,12 @@ async function bodySnapshot(
   }
 }
 
-/** Effect: 包装 fetch；返回原 Response，失败抛出原错误，卸载时只恢复自己的包装。 */
+/**
+ * 包装 Fetch，保留原 Response 和错误；常规接入只需 createLogger({ ..., captureFetch: true })。
+ * 此底层入口供需要指定 fetch 宿主的调用方使用，返回卸载函数，只恢复本次包装。
+ * 文本/JSON 响应克隆后有限读取，不等待正文采集才返回；流和二进制正文不读取。
+ * Request 自带正文不克隆；需要记录普通请求体时通过 init.body 传入文本或 JSON 字符串。
+ */
 export function attachFetchLogger(
   logger: Logger,
   target: Pick<typeof globalThis, "fetch"> = globalThis,

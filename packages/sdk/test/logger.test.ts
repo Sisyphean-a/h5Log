@@ -103,12 +103,22 @@ describe("SDK 采集和生命周期", () => {
     ).toEqual(["runtime failure", "promise failure"]);
   });
 
-  it("不再把普通长桥接报文替换为 256 字符摘要", async () => {
-    const client = start();
+  it("仅三项配置就通过 console 采集完整桥接日志，无需额外接入", async () => {
+    const original = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    logger = createLogger({
+      enabled: true,
+      appId: "26",
+      endpoint: "https://logs.test/api/logs",
+    });
     const message = "a".repeat(1000);
-    client.record("bridge", "info", message);
-    await client.flush();
-    expect(sent().events[0]!.args).toEqual([message]);
+    console.info("桥接发送", message);
+    await logger.flush();
+    expect(original).toHaveBeenCalledWith("桥接发送", message);
+    expect(sent().events).toHaveLength(1);
+    expect(sent().events[0]).toMatchObject({
+      source: "console",
+      args: ["桥接发送", message],
+    });
   });
 
   it("单条超大日志留下明确限制标记", async () => {

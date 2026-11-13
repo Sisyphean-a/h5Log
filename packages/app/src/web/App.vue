@@ -170,7 +170,6 @@ const sourceOptions = [
   { label: "控制台", value: "console" },
   { label: "异常", value: "error" },
   { label: "接口", value: "http" },
-  { label: "桥接", value: "bridge" },
   { label: "自定义", value: "custom" },
 ];
 const sessionOptions = computed(() =>
