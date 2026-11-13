@@ -11,6 +11,7 @@
   },
   "scripts": {
     "dev": "npm run build -w @h5-log/sdk && node scripts/dev.mjs",
+    "dev:web": "npm run build -w @h5-log/sdk && npm run dev -w @h5-log/app",
     "build": "npm run build -w @h5-log/sdk && npm run build -w @h5-log/app",
     "start": "node packages/app/dist/server/cli.mjs",
     "pack:sdk": "npm run build -w @h5-log/sdk && npm pack -w @h5-log/sdk",

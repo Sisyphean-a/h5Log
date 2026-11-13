@@ -86,11 +86,6 @@ function copyJson(): void {
           <span class="related-text">{{ messageText(item) }}</span>
         </button>
       </section>
-
-      <section class="block">
-        <h3>原始事件</h3>
-        <JsonBlock :value="log" />
-      </section>
     </div>
   </aside>
 </template>

@@ -7,11 +7,11 @@
   display: inline-block;
   color: #829389;
   margin-bottom: 45px;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .demo-description {
   color: #8a9590;
-  font-size: 12px;
+  font-size: 13.5px;
   margin: 15px 0 30px;
   line-height: 1.8;
 }
@@ -25,12 +25,12 @@
 .demo-card > label {
   display: block;
   color: #7a887f;
-  font-size: 11px;
+  font-size: 12.5px;
   margin-bottom: 13px;
 }
 .demo-card input {
   width: 100%;
-  height: 38px;
+  height: 40px;
   border: 1px solid #dfe5e0;
   border-radius: 5px;
   padding: 0 12px;
@@ -47,18 +47,18 @@
   background: #eef2ef;
   color: #647b6b;
   border: 1px solid #dfe7e1;
-  padding: 8px 12px;
-  font-size: 11px;
+  padding: 9px 13px;
+  font-size: 12.5px;
 }
 .demo-card pre {
-  font: 11px/1.8 var(--mono);
+  font: 12px/1.8 var(--mono);
   color: #869187;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 20px 0 0;
 }
 .demo-status {
-  font-size: 10px;
+  font-size: 11.5px;
   color: #96a198;
   margin-top: 22px;
   display: flex;

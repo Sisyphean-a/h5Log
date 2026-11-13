@@ -86,7 +86,7 @@ export function clientLabel(client: {
   deviceName: string;
   deviceId: string;
 }): string {
-  const name = client.deviceName || client.deviceId.slice(0, 6);
+  const name = client.deviceName || `设备 ${client.deviceId.slice(0, 6)}`;
   return `${name} · ${client.appId}/${client.environment}`;
 }
 

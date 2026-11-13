@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   plugins: [vue()],
   server: {
-    port: 5173,
+    // Rule: 5173 被同机其他项目占用，工作台固定用 5388，避免开发时抢端口。
+    port: 5388,
     strictPort: true,
     proxy: { "/api": "http://127.0.0.1:3000" },
   },

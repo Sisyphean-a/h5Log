@@ -2,6 +2,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { NSelect } from "naive-ui";
 import type { LogClient, LogPage, StoredLog } from "@h5-log/sdk";
 import App from "../src/web/App.vue";
 
@@ -77,6 +78,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 
 it("默认盯住最近上报的客户端，输入关键词后新日志只显示匹配内容", async () => {
@@ -110,6 +112,45 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   expect(wrapper.text()).toContain("订单已提交");
   expect(wrapper.text()).not.toContain("无关日志");
 
+  wrapper.unmount();
+});
+
+it("隐藏其他设备只收缩当前浏览器的设备候选，不删除服务端范围", async () => {
+  localStorage.clear();
+  const other = {
+    ...client,
+    key: "client-b",
+    deviceId: "phone-b",
+    deviceName: "备用手机",
+    lastSeen: Date.now() - 60_000,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ...pageBody([log(1, "来自主设备")]),
+        clients: [client, other],
+      }),
+    })),
+  );
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  const stream = Stream.instances.at(-1)!;
+  stream.emit("hello", { serverId: "server-a", clients: [client, other] });
+
+  await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
+  const select = wrapper
+    .findAllComponents(NSelect)
+    .find((item) => item.classes().includes("client-select"))!;
+  expect(select.props("options")).toHaveLength(2);
+
+  await wrapper.find(".scope-action").trigger("click");
+  expect(select.props("options")).toHaveLength(1);
+  expect(wrapper.find(".scope-action").text()).toContain("显示全部设备");
+
+  await wrapper.find(".scope-action").trigger("click");
+  expect(select.props("options")).toHaveLength(2);
   wrapper.unmount();
 });
 

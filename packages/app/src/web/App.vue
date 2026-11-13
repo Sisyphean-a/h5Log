@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import {
   NButton,
   NConfigProvider,
-  NDropdown,
   NInput,
   NSelect,
   type GlobalThemeOverrides,
@@ -41,11 +40,12 @@ const themeOverrides: GlobalThemeOverrides = {
     bodyColor: "#ffffff",
     borderRadius: "6px",
     borderRadiusSmall: "5px",
-    fontSize: "12.5px",
-    fontSizeSmall: "12px",
+    fontSize: "14px",
+    fontSizeSmall: "14px",
+    fontSizeTiny: "12.5px",
     fontWeightStrong: "600",
-    heightSmall: "28px",
-    heightTiny: "24px",
+    heightSmall: "32px",
+    heightTiny: "26px",
     popoverColor: "#ffffff",
     modalColor: "#ffffff",
   },
@@ -56,7 +56,7 @@ const themeOverrides: GlobalThemeOverrides = {
     borderHover: "1px solid #cfd8d1",
     borderFocus: "1px solid #3f6250",
     boxShadowFocus: "0 0 0 2px rgba(63, 98, 80, 0.12)",
-    paddingSmall: "0 9px",
+    paddingSmall: "0 10px",
   },
   Select: {
     peers: {
@@ -78,88 +78,38 @@ const themeOverrides: GlobalThemeOverrides = {
     textColorHover: "#1b2822",
     fontWeight: "500",
   },
-  Switch: {
-    railColorActive: "#3f6250",
-    railColor: "#d8ded9",
-  },
-  Dropdown: {
-    optionHeightSmall: "28px",
-  },
 };
 
-const canMatchMedia = typeof window.matchMedia === "function";
-const narrow = ref(
-  canMatchMedia && window.matchMedia("(max-width: 900px)").matches,
-);
 const searchInput = ref(state.filter.search);
 const searchRef = ref<{ focus: () => void } | null>(null);
 const listEl = ref<HTMLElement>();
 const toast = ref("");
 const statusOpen = ref(false);
 const setupOpen = ref(false);
+const sidebarOpen = ref(false);
+const CLIENT_HIDE_KEY = "h5-log:hidden-clients-before";
+const hiddenBefore = ref(readHiddenBefore());
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let autoSelected = false;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 const clientOptions = computed(() =>
-  state.clients.map((client) => ({
-    label: `${clientLabel(client)} · ${relativeTime(client.lastSeen)}`,
-    value: client.key,
-  })),
+  state.clients
+    .filter(
+      (client) =>
+        client.key === state.filter.clientKey ||
+        client.lastSeen >= hiddenBefore.value,
+    )
+    .map((client) => ({
+      label: `${clientLabel(client)} · ${relativeTime(client.lastSeen)}`,
+      value: client.key,
+    })),
 );
-const moreOptions = computed(() => [
-  ...(narrow.value ? [{ label: "清空视图", key: "clear" }] : []),
-  { label: "服务状态", key: "status" },
-  { label: "接入 SDK", key: "setup" },
-  { label: "复制当前列表", key: "copy" },
-  { label: "导出当前列表", key: "export" },
-]);
-
-// Rule: 手机上只留“选设备 + 搜索”，级别/来源/会话收进“筛选”，避免工具条占掉半个屏幕。
-const activeFilterCount = computed(
+const canHideClients = computed(
   () =>
-    [state.filter.level, state.filter.source, state.filter.sessionId].filter(
-      Boolean,
-    ).length,
+    !!state.filter.clientKey &&
+    state.clients.some((client) => client.key !== state.filter.clientKey),
 );
-const filterOptions = computed(() => [
-  {
-    type: "group",
-    label: "级别",
-    key: "group-level",
-    children: [
-      { label: "全部级别", key: "level:" },
-      ...levelOptions.map((item) => ({
-        label: item.label,
-        key: `level:${item.value}`,
-      })),
-    ],
-  },
-  {
-    type: "group",
-    label: "来源",
-    key: "group-source",
-    children: [
-      { label: "全部来源", key: "source:" },
-      ...sourceOptions.map((item) => ({
-        label: item.label,
-        key: `source:${item.value}`,
-      })),
-    ],
-  },
-  {
-    type: "group",
-    label: "会话",
-    key: "group-session",
-    children: [
-      { label: "全部会话", key: "session:" },
-      ...sessionOptions.value.map((item) => ({
-        label: item.label,
-        key: `session:${item.value}`,
-      })),
-    ],
-  },
-]);
 const levelOptions = [
   { label: "错误", value: "error" },
   { label: "警告", value: "warn" },
@@ -203,8 +153,9 @@ const connectionText = computed(() =>
 );
 // Rule: 关键词在本地也立即过滤一次，不必等服务端往返；服务端同样按关键词收窄窗口。
 const visibleLogs = computed(() => state.logs.filter((log) => workbench.matches(log)));
+const viewCleared = computed(() => state.clearAfter > 0 && !state.loading);
 const canOlder = computed(() => !state.loading && state.logs.length > 0);
-const showScopeInSubline = computed(
+const hasStaleScope = computed(
   () => !!state.filter.clientKey && !currentClient.value,
 );
 const clientValue = computed<string | null>({
@@ -223,6 +174,37 @@ const sessionValue = computed<string | null>({
   get: () => state.filter.sessionId || null,
   set: (value) => workbench.setFilter({ sessionId: value ?? "" }),
 });
+
+function readHiddenBefore(): number {
+  try {
+    const value = Number(localStorage.getItem(CLIENT_HIDE_KEY));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function persistHiddenBefore(): void {
+  try {
+    if (hiddenBefore.value > 0) {
+      localStorage.setItem(CLIENT_HIDE_KEY, String(hiddenBefore.value));
+    } else {
+      localStorage.removeItem(CLIENT_HIDE_KEY);
+    }
+  } catch {
+    // Failure: 本地存储不可用时只隐藏当前会话。
+  }
+}
+
+function hideOtherClients(): void {
+  hiddenBefore.value = Date.now();
+  persistHiddenBefore();
+}
+
+function showAllClients(): void {
+  hiddenBefore.value = 0;
+  persistHiddenBefore();
+}
 
 function showToast(message: string): void {
   clearTimeout(toastTimer);
@@ -317,21 +299,6 @@ async function copyVisible(): Promise<void> {
   }
 }
 
-function onFilter(key: string): void {
-  const [field, value = ""] = key.split(":");
-  if (field === "level") workbench.setFilter({ level: value });
-  else if (field === "source") workbench.setFilter({ source: value });
-  else if (field === "session") workbench.setFilter({ sessionId: value });
-}
-
-function onMore(key: string): void {
-  if (key === "clear") workbench.clearView();
-  else if (key === "status") void openService();
-  else if (key === "setup") setupOpen.value = true;
-  else if (key === "copy") void copyVisible();
-  else if (key === "export") exportPage();
-}
-
 function onKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   const typing =
@@ -342,7 +309,10 @@ function onKeydown(event: KeyboardEvent): void {
     event.preventDefault();
     searchRef.value?.focus();
   }
-  if (event.key === "Escape") workbench.closeDetail();
+  if (event.key === "Escape") {
+    workbench.closeDetail();
+    sidebarOpen.value = false;
+  }
 }
 
 function onPageShow(event: PageTransitionEvent): void {
@@ -353,17 +323,7 @@ function onPageHide(event: PageTransitionEvent): void {
   if (event.persisted) workbench.suspend();
 }
 
-let media: MediaQueryList | undefined;
-function onMediaChange(event: MediaQueryListEvent): void {
-  narrow.value = event.matches;
-}
-
 onMounted(() => {
-  if (typeof window.matchMedia === "function") {
-    media = window.matchMedia("(max-width: 900px)");
-    narrow.value = media.matches;
-    media.addEventListener("change", onMediaChange);
-  }
   workbench.connect();
   void workbench.load();
   document.addEventListener("keydown", onKeydown);
@@ -374,7 +334,6 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onKeydown);
   window.removeEventListener("pageshow", onPageShow);
   window.removeEventListener("pagehide", onPageHide);
-  media?.removeEventListener("change", onMediaChange);
   clearTimeout(searchTimer);
   clearTimeout(toastTimer);
   workbench.dispose();
@@ -384,139 +343,217 @@ onBeforeUnmount(() => {
 
 <template>
   <NConfigProvider :theme-overrides="themeOverrides">
-    <div class="app">
-      <header class="toolbar">
-        <div class="brand">
-          <span class="brand-mark">h5</span>
-          <span class="brand-name">Log</span>
+    <div class="app" :class="{ 'sidebar-open': sidebarOpen }">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-head">
+          <div class="brand">
+            <span class="brand-mark">h5</span>
+            <span class="brand-name">Log</span>
+          </div>
+          <span class="spacer" />
+          <button
+            type="button"
+            class="drawer-close"
+            aria-label="关闭侧栏"
+            @click="sidebarOpen = false"
+          >
+            ×
+          </button>
         </div>
 
-        <NSelect
-          v-model:value="clientValue"
-          class="client-select"
-          size="small"
-          filterable
-          clearable
-          placeholder="选择客户端"
-          :options="clientOptions"
-        />
-
-        <div class="search-wrap">
-          <NInput
-            ref="searchRef"
+        <div class="sidebar-scroll">
+          <NSelect
+            v-model:value="clientValue"
+            class="client-select"
             size="small"
+            filterable
             clearable
-            :value="searchInput"
-            placeholder="搜索日志内容"
-            @update:value="onSearchInput"
+            :consistent-menu-width="false"
+            :menu-props="{ style: { maxWidth: 'calc(100vw - 32px)' } }"
+            placeholder="选择客户端"
+            :options="clientOptions"
           />
-          <kbd v-if="!searchInput" class="kbd">/</kbd>
+
+          <div class="scope-meta">
+            <span class="count">{{ state.total }} 条</span>
+            <span class="conn" :data-state="state.connection">
+              <i class="conn-dot" />{{ connectionText }}
+            </span>
+            <span v-if="state.localMode" class="badge">本地历史</span>
+            <button
+              v-if="hiddenBefore"
+              type="button"
+              class="scope-action"
+              title="恢复显示所有设备"
+              @click="showAllClients"
+            >
+              显示全部设备
+            </button>
+            <button
+              v-else-if="canHideClients"
+              type="button"
+              class="scope-action"
+              title="只影响当前浏览器的设备列表，不删除日志；设备重新上报后会再次出现"
+              @click="hideOtherClients"
+            >
+              隐藏其他设备
+            </button>
+          </div>
+          <p v-if="hasStaleScope" class="scope-warn">{{ scopeTitle }}</p>
+
+          <div class="search-wrap">
+            <NInput
+              ref="searchRef"
+              size="small"
+              clearable
+              :value="searchInput"
+              placeholder="搜索日志内容"
+              @update:value="onSearchInput"
+            />
+            <kbd v-if="!searchInput" class="kbd">/</kbd>
+          </div>
+
+          <div class="filter-stack">
+            <NSelect
+              v-model:value="levelValue"
+              size="small"
+              clearable
+              placeholder="级别"
+              :options="levelOptions"
+            />
+            <NSelect
+              v-model:value="sourceValue"
+              size="small"
+              clearable
+              placeholder="来源"
+              :options="sourceOptions"
+            />
+            <NSelect
+              v-model:value="sessionValue"
+              size="small"
+              clearable
+              placeholder="会话"
+              :options="sessionOptions"
+            />
+          </div>
+
+          <div class="side-actions">
+            <button
+              type="button"
+              class="toggle"
+              :class="{ on: state.follow }"
+              :aria-pressed="state.follow"
+              title="跟随最新日志"
+              @click="toggleFollow"
+            >
+              <i class="toggle-dot" />跟随
+            </button>
+            <div class="action-row">
+              <NButton size="small" quaternary :disabled="!canOlder" @click="loadOlder">
+                更早
+              </NButton>
+              <NButton size="small" quaternary @click="workbench.latest()">最新</NButton>
+              <NButton
+                size="small"
+                quaternary
+                title="清空当前视图，不删除服务器日志和本地历史"
+                @click="workbench.clearView()"
+              >
+                清空视图
+              </NButton>
+            </div>
+          </div>
         </div>
 
-        <template v-if="!narrow">
-          <NSelect
-            v-model:value="levelValue"
-            class="narrow"
-            size="small"
-            clearable
-            placeholder="级别"
-            :options="levelOptions"
-          />
-          <NSelect
-            v-model:value="sourceValue"
-            class="narrow"
-            size="small"
-            clearable
-            placeholder="来源"
-            :options="sourceOptions"
-          />
-          <NSelect
-            v-model:value="sessionValue"
-            class="narrow session-select"
-            size="small"
-            clearable
-            placeholder="会话"
-            :options="sessionOptions"
-          />
-        </template>
-        <NDropdown v-else :options="filterOptions" @select="onFilter">
-          <NButton size="small" quaternary>
-            筛选<span v-if="activeFilterCount" class="filter-count">{{ activeFilterCount }}</span>
-          </NButton>
-        </NDropdown>
-
-        <span class="spacer" />
-
-        <button
-          type="button"
-          class="toggle"
-          :class="{ on: state.follow }"
-          :aria-pressed="state.follow"
-          title="跟随最新日志"
-          @click="toggleFollow"
-        >
-          <i class="toggle-dot" />跟随
-        </button>
-        <NButton size="small" quaternary :disabled="!canOlder" @click="loadOlder">
-          更早
-        </NButton>
-        <NButton size="small" quaternary @click="workbench.latest()">最新</NButton>
-        <NButton
-          v-if="!narrow"
-          size="small"
-          quaternary
-          @click="workbench.clearView()"
-        >
-          清空
-        </NButton>
-        <NDropdown :options="moreOptions" @select="onMore">
-          <NButton size="small" quaternary>更多</NButton>
-        </NDropdown>
-      </header>
-
-      <div class="subline">
-        <span class="count">{{ state.total }} 条</span>
-        <span class="conn" :data-state="state.connection">
-          <i class="conn-dot" />{{ connectionText }}
-        </span>
-        <span v-if="state.localMode" class="badge">本地历史</span>
-        <span v-if="searchInput" class="badge">关键词 {{ searchInput }}</span>
-        <span v-if="showScopeInSubline" class="badge warn">{{ scopeTitle }}</span>
-        <span class="spacer" />
-        <span v-if="state.error" class="error-text">读取失败：{{ state.error }}</span>
-        <span class="hint-key"><kbd class="kbd">/</kbd> 搜索</span>
-      </div>
-
-      <div class="body">
-        <main ref="listEl" class="workspace" @scroll="onScroll">
-          <div v-if="visibleLogs.length > 0" class="list-head">
-            <span>时间</span><span>级别</span><span>来源</span><span>内容</span>
+        <div class="sidebar-foot">
+          <p v-if="state.error" class="error-text">读取失败：{{ state.error }}</p>
+          <div class="foot-actions">
+            <button type="button" class="quiet-link" @click="openService">服务状态</button>
+            <button type="button" class="quiet-link" @click="setupOpen = true">接入 SDK</button>
+            <button type="button" class="quiet-link" @click="copyVisible">复制列表</button>
+            <button type="button" class="quiet-link" @click="exportPage">导出列表</button>
           </div>
-          <div v-if="visibleLogs.length === 0" class="empty">
-            <p class="empty-title">
-              {{ state.loading ? "正在读取日志…" : "当前范围没有日志" }}
-            </p>
-            <p v-if="!state.loading" class="hint">
-              在手机上操作，或打开
-              <a class="link" href="/demo.html" target="_blank" rel="noopener">接入演示</a>
-              发一条测试日志。
-            </p>
-          </div>
-          <LogList
-            v-else
-            :logs="visibleLogs"
-            :selected-id="state.selectedId"
+        </div>
+      </aside>
+
+      <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false" />
+
+      <div class="main">
+        <div class="mobile-bar">
+          <button
+            type="button"
+            class="bar-menu"
+            aria-label="打开侧栏"
+            aria-controls="sidebar"
+            :aria-expanded="sidebarOpen"
+            title="打开侧栏"
+            @click="sidebarOpen = true"
+          >
+            ☰
+          </button>
+          <span class="bar-scope">{{ scopeTitle }}</span>
+          <span class="spacer" />
+          <span v-if="state.error" class="bar-error">读取失败</span>
+          <span class="count">{{ state.total }} 条</span>
+          <span
+            class="conn"
+            :data-state="state.connection"
+            :title="connectionText"
+          >
+            <i class="conn-dot" />{{ connectionText }}
+          </span>
+        </div>
+
+        <div class="body">
+          <main ref="listEl" class="workspace" @scroll="onScroll">
+            <div v-if="visibleLogs.length > 0" class="list-head">
+              <span>时间</span><span>级别</span><span>来源</span><span>内容</span>
+            </div>
+            <div v-if="visibleLogs.length === 0" class="empty">
+              <p class="empty-title">
+                {{
+                  state.loading
+                    ? "正在读取日志…"
+                    : viewCleared
+                      ? "视图已清空"
+                      : "当前范围没有日志"
+                }}
+              </p>
+              <p v-if="!state.loading" class="hint">
+                <template v-if="viewCleared">
+                  服务器日志仍在；新日志会继续显示。
+                  <button
+                    type="button"
+                    class="empty-action"
+                    @click="workbench.resetView()"
+                  >
+                    恢复视图
+                  </button>
+                </template>
+                <template v-else>
+                  在手机上操作，或打开
+                  <a class="link" href="/demo.html" target="_blank" rel="noopener">接入演示</a>
+                  发一条测试日志。
+                </template>
+              </p>
+            </div>
+            <LogList
+              v-else
+              :logs="visibleLogs"
+              :selected-id="state.selectedId"
+              :query="state.filter.search"
+              @select="openDetail"
+            />
+          </main>
+
+          <LogDetailPanel
+            v-if="state.detail"
+            :detail="state.detail"
+            @close="workbench.closeDetail()"
+            @copy="showToast('已复制详情')"
             @select="openDetail"
           />
-        </main>
-
-        <LogDetailPanel
-          v-if="state.detail"
-          :detail="state.detail"
-          @close="workbench.closeDetail()"
-          @copy="showToast('已复制详情')"
-          @select="openDetail"
-        />
+        </div>
       </div>
 
       <div v-if="toast" class="toast">{{ toast }}</div>

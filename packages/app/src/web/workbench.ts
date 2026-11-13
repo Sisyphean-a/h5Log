@@ -320,6 +320,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.logs = [];
     state.total = 0;
     state.selectedId = undefined;
+    state.detail = undefined;
     state.localMode = false;
   }
 

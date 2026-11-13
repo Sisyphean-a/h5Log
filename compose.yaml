@@ -1,0 +1,8 @@
+services:
+  h5-log:
+    build: .
+    image: h5-log:latest
+    container_name: h5-log
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
