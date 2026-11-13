@@ -4,7 +4,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const processes = [
   spawn(
     process.execPath,
-    ["--watch", "--import", "tsx", "packages/server/src/cli.ts"],
+    ["--watch", "--import", "tsx", "packages/app/src/server/cli.ts"],
     { cwd: root, stdio: "inherit" },
   ),
   spawn(
@@ -17,7 +17,7 @@ const processes = [
       "127.0.0.1",
     ],
     {
-      cwd: fileURLToPath(new URL("../packages/web/", import.meta.url)),
+      cwd: fileURLToPath(new URL("../packages/app/", import.meta.url)),
       stdio: "inherit",
     },
   ),

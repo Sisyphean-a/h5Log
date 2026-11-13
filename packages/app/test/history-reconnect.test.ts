@@ -60,7 +60,7 @@ afterEach(() => {
 });
 it("重连后重新读取同一个历史页并合入断线期间的新日志", async () => {
   document.body.innerHTML = readFileSync(
-    "packages/web/index.html",
+    "packages/app/index.html",
     "utf8",
   ).match(/<body>([\s\S]*)<\/body>/)![1]!;
   let finish!: (value: ReturnType<typeof response>) => void;
@@ -83,7 +83,7 @@ it("重连后重新读取同一个历史页并合入断线期间的新日志", a
     .mockResolvedValue(response(310));
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("EventSource", Stream);
-  await import("../src/main.js");
+  await import("../src/web/main.js");
   await vi.waitFor(() =>
     expect(document.querySelectorAll(".log-row")).toHaveLength(200),
   );

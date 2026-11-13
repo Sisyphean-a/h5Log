@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import type { StoredLog } from "@h5-log/sdk";
-import { createInspector } from "../src/inspector.js";
+import { createInspector } from "../src/web/inspector.js";
 
 function log(id: number, phase: string, requestId = "request-1"): StoredLog {
   return {
@@ -38,7 +38,7 @@ afterEach(() => {
 });
 it("同一请求收发合并查看，切换原始事件，迟到响应不会覆盖当前选择", async () => {
   document.body.innerHTML = readFileSync(
-    "packages/web/index.html",
+    "packages/app/index.html",
     "utf8",
   ).match(/<body>([\s\S]*)<\/body>/)![1]!;
   const first = log(1, "request");

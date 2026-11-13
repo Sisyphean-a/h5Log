@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: { "/api": "http://127.0.0.1:3000" },
   },
   build: {
+    outDir: "dist/web",
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),

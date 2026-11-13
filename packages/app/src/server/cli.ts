@@ -14,7 +14,7 @@ const port = positiveNumber("PORT", 3000);
 if (port > 65535) throw new Error("PORT 超出端口范围");
 const host = process.env.HOST ?? "127.0.0.1";
 const { server, close } = createLogServer({
-  webRoot: fileURLToPath(new URL("../../web/dist/", import.meta.url)),
+  webRoot: fileURLToPath(new URL("../web/", import.meta.url)),
   store: new LogStore({
     maxLogs: positiveNumber("MAX_LOGS", 20000),
     maxBytes: positiveNumber("MAX_MEMORY_MB", 32) * 1024 * 1024,

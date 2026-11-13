@@ -63,7 +63,7 @@ afterEach(() => {
 });
 it("历史分页维持历史模式并可返回实时", async () => {
   document.body.innerHTML = readFileSync(
-    "packages/web/index.html",
+    "packages/app/index.html",
     "utf8",
   ).match(/<body>([\s\S]*)<\/body>/)![1]!;
   let olderRequest!: (value: ReturnType<typeof response>) => void;
@@ -84,7 +84,7 @@ it("历史分页维持历史模式并可返回实时", async () => {
     .mockResolvedValue(response([item(51)], true));
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("EventSource", Stream);
-  await import("../src/main.js");
+  await import("../src/web/main.js");
   await vi.waitFor(() =>
     expect(document.querySelectorAll(".log-row")).toHaveLength(200),
   );

@@ -22,13 +22,16 @@ npm run dev
 
 工作台在 `http://127.0.0.1:5173`，日志服务在 `http://127.0.0.1:3000`。服务端和页面支持热更新；修改 SDK 后重新运行开发命令以构建 SDK。
 
-## 三个包
+## 两个包
 
-| 包                                   | 职责                                                    |
-| ------------------------------------ | ------------------------------------------------------- |
-| `packages/sdk` · `@h5-log/sdk`       | console、JS 异常采集、独立上传、Axios 与可选 fetch 接入 |
-| `packages/server` · `@h5-log/server` | 日志接收、内存保留、查询、SSE 分发、托管页面            |
-| `packages/web` · `@h5-log/web`       | 客户端与会话筛选、请求详情、导出、服务状态              |
+| 包                             | 职责                                                       |
+| ------------------------------ | ---------------------------------------------------------- |
+| `packages/sdk` · `@h5-log/sdk` | console、JS 异常采集、独立上传、Axios 与可选 fetch 接入     |
+| `packages/app` · `@h5-log/app` | 日志服务（接收、内存保留、查询、SSE）与工作台页面，构建为同一个产物 |
+
+`packages/app` 内部 `src/server` 是 Node.js 日志服务，`src/web` 是 Vite 构建的工作台，构建后输出 `dist/server` 与 `dist/web`；服务进程直接托管 `dist/web`。
+
+SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一起部署。
 
 只需要部署一个 Node.js 服务，页面随服务一起提供。运行时服务不需要数据库，也不依赖 WebSocket。可直接运行 Node 服务，或使用随仓库提供的 Dockerfile：
 
@@ -98,6 +101,6 @@ HTTPS 的 H5 应配置 HTTPS 日志地址。服务部署在域名根路径；查
 npm run check
 ```
 
-执行 TypeScript 检查、SDK/服务端契约测试及三个包构建。
+执行 TypeScript 检查、SDK 与服务端契约测试及两个包构建。
 
 项目重要规则与架构入口在 [.codestable/architecture/INDEX.md](.codestable/architecture/INDEX.md)，领域规则见 [.codestable/requirements/CONTEXT.md](.codestable/requirements/CONTEXT.md)。

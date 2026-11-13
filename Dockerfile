@@ -3,8 +3,7 @@ FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 COPY packages/sdk/package.json packages/sdk/package.json
-COPY packages/server/package.json packages/server/package.json
-COPY packages/web/package.json packages/web/package.json
+COPY packages/app/package.json packages/app/package.json
 RUN npm ci
 COPY packages ./packages
 RUN npm run build
@@ -19,4 +18,4 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-CMD ["node", "packages/server/dist/cli.js"]
+CMD ["node", "packages/app/dist/server/cli.js"]

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { ClientUpdate, LogEvent, LogPage } from "@h5-log/sdk";
-import { createLogServer, LogStore } from "../src/index.js";
+import { createLogServer, LogStore } from "../src/server/index.js";
 
 function event(extra: Partial<LogEvent> = {}): LogEvent {
   return {

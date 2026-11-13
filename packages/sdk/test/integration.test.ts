@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { LogPage, Logger, LoggerOptions } from "../src/types.js";
 import { createLogger } from "../src/index.js";
-import { createLogServer } from "../../server/src/index.js";
+import { createLogServer } from "../../app/src/server/index.js";
 
 const instances: Logger[] = [];
 afterEach(() => {

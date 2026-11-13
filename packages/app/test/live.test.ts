@@ -79,12 +79,12 @@ afterEach(() => {
 });
 
 it("筛选缓冲不会被无关日志挤掉，清空使用全局游标，后退缓存恢复后重新接收", async () => {
-  const html = readFileSync("packages/web/index.html", "utf8");
+  const html = readFileSync("packages/app/index.html", "utf8");
   document.body.innerHTML = html.match(/<body>([\s\S]*)<\/body>/)![1]!;
   const fetchPage = vi.fn().mockResolvedValue(response(page()));
   vi.stubGlobal("fetch", fetchPage);
   vi.stubGlobal("EventSource", Stream);
-  await import("../src/main.js");
+  await import("../src/web/main.js");
   await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(1));
   await vi.waitFor(() =>
     expect(document.querySelector("#client-count")!.textContent).toBe("1"),

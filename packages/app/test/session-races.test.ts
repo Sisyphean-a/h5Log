@@ -74,7 +74,7 @@ afterEach(() => {
 
 it("忽略快照游标内迟到的重复 SSE，只计入新日志一次", async () => {
   document.body.innerHTML = readFileSync(
-    "packages/web/index.html",
+    "packages/app/index.html",
     "utf8",
   ).match(/<body>([\s\S]*)<\/body>/)![1]!;
   window.history.replaceState(null, "", "/?level=error");
@@ -84,7 +84,7 @@ it("忽略快照游标内迟到的重复 SSE，只计入新日志一次", async 
   });
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("EventSource", Stream);
-  await import("../src/main.js");
+  await import("../src/web/main.js");
   await vi.waitFor(() =>
     expect(document.querySelector(".log-row")).not.toBeNull(),
   );

@@ -1,7 +1,7 @@
 # 远程日志
 
 scope: context:remote-logging
-packages: sdk, server, web
+packages: sdk, app
 
 ## 规范词
 
@@ -22,4 +22,4 @@ packages: sdk, server, web
 - SDK 仅在显式开启时运行；生产保持禁用。工作台按最近上报描述客户端，不把静默等同离线。
 - 以最小可用和后续按需扩展为准，不预建复杂认证、设备管理、请求瀑布图、分析大屏或数据库系统。
 
-代码锚点：packages/sdk/src/types.ts、index.ts、axios.ts；packages/server/src/store.ts；packages/web/src/main.ts。
+代码锚点：packages/sdk/src/types.ts、index.ts、axios.ts；packages/app/src/server/store.ts；packages/app/src/web/main.ts。

@@ -1,11 +1,10 @@
 {
-  "name": "@h5-log/web",
+  "name": "@h5-log/app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "dev": "vite --host 127.0.0.1"
+    "build": "tsc -p tsconfig.server.json && vite build"
   },
   "dependencies": {
     "@h5-log/sdk": "0.1.0",
