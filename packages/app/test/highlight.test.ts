@@ -26,14 +26,27 @@ it("识别日志开头的方括号标签", () => {
 
 it("识别请求方法、路径、耗时与百分比", () => {
   expect(kinds("→ GET /api/app/h5/v4/index 200 · 995 ms")).toEqual([
-    ["plain", "→ "],
-    ["http-method", "GET"],
-    ["plain", " "],
-    ["path", "/api/app/h5/v4/index"],
+    ["http-prefix", "→ GET /api/app/h5/v4/"],
+    ["http-name", "index"],
     ["plain", " 200 · "],
     ["metric", "995 ms"],
   ]);
   expect(kinds("使用率 50%")).toContainEqual(["metric", "50%"]);
+});
+
+it.each([
+  ["→ POST /api/app/inpage/checkCusBlackList", "checkCusBlackList"],
+  ["← GET /api/app/getUser?redirect=/other/name#section", "getUser"],
+  ["→ GET https://api.example/v1/users/?next=/another/path", "users"],
+  ["→ DELETE /api/删除记录?ids=1,2", "删除记录"],
+  ["→ HEAD /?next=/home", "/"],
+])("接口只突出查询参数前的末段名称：%s", (text, name) => {
+  const tokens = tokenizeLogText(text);
+  expect(tokens.filter((token) => token.kind === "http-name").map((token) => token.text).join("")).toBe(name);
+  expect(tokens.map((token) => token.text).join("")).toBe(text);
+  const pieces = highlightLogText(text, name);
+  expect(pieces.filter((piece) => piece.hit).map((piece) => piece.text).join("")).toContain(name);
+  expect(pieces.some((piece) => piece.kind === "http-name" && piece.hit)).toBe(true);
 });
 
 it("识别 URL、错误关键词和堆栈", () => {

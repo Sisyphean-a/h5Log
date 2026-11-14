@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { jsonText, jsonTokens } from "../format.js";
+import { jsonDisplayText, jsonTokens } from "../format.js";
 
 const props = defineProps<{ value: unknown }>();
 
-const tokens = computed(() => jsonTokens(jsonText(props.value)));
+const tokens = computed(() => jsonTokens(jsonDisplayText(props.value)));
 </script>
 
 <template>

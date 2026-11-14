@@ -88,6 +88,21 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
     expect(result.retentionHours).toBe(12);
   });
 
+  it("来源可按逗号分隔的并集筛选，单选和未指定来源仍保持原语义", async () => {
+    await post([
+      event({ source: "console" }),
+      event({ source: "http" }),
+      event({ source: "error", level: "error" }),
+      event({ source: "custom" }),
+    ]);
+    const selected = await page("source=console%2Chttp");
+    expect(selected.logs.map((log) => log.source)).toEqual(["console", "http"]);
+    expect(selected.total).toBe(2);
+    expect(selected.sessions[0]!.logCount).toBe(4);
+    expect((await page("source=http")).logs.map((log) => log.source)).toEqual(["http"]);
+    expect((await page()).logs).toHaveLength(4);
+  });
+
   it("返回完整会话、总数和关联请求，不能跨客户端或会话串联", async () => {
     const request = event({
       source: "http",

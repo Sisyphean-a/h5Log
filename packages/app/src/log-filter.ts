@@ -6,6 +6,7 @@ export interface LogFilter {
   clientKey?: string;
   sessionId?: string;
   level?: string;
+  /** Rule: 逗号分隔的来源取并集，空值表示不限来源。 */
   source?: string;
   search?: string;
 }
@@ -14,6 +15,7 @@ export interface LogFilter {
 export function createLogMatcher(filter: LogFilter) {
   const { appId, environment, clientKey, sessionId, level, source } = filter;
   const search = filter.search?.trim().toLocaleLowerCase();
+  const sources = new Set(source ? source.split(",") : []);
 
   function inScope(log: StoredLog): boolean {
     return (
@@ -28,7 +30,7 @@ export function createLogMatcher(filter: LogFilter) {
       inScope(log) &&
       (!sessionId || log.sessionId === sessionId) &&
       (!level || log.level === level) &&
-      (!source || log.source === source) &&
+      (sources.size === 0 || sources.has(log.source)) &&
       (!search || JSON.stringify(log.args).toLocaleLowerCase().includes(search))
     );
   }

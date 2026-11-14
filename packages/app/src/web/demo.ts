@@ -16,7 +16,7 @@ const detach = attachAxiosLogger(client, logger);
 const message = document.getElementById("demo-message") as HTMLInputElement;
 const result = document.getElementById("demo-result")!;
 document.getElementById("demo-client")!.textContent =
-  `客户端 ${logger.context.deviceId.slice(0, 8)} · 会话 ${logger.context.sessionId.slice(0, 8)}`;
+  `设备 ${logger.context.deviceId.slice(0, 8)}`;
 document
   .getElementById("demo-log")!
   .addEventListener("click", () =>

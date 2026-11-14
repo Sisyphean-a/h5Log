@@ -470,7 +470,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       state.clients = page.clients;
     } catch {
       if (version !== requestVersion || lifecycle !== "active") return;
-      notice("会话列表更新失败，请重新读取");
+      notice("日志索引更新失败，请重新读取");
     }
   }
 
@@ -580,7 +580,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
           JSON.parse((event as MessageEvent<string>).data) as ClientUpdate,
         );
       } catch {
-        notice("客户端列表更新失败");
+        notice("设备列表更新失败");
       }
     });
   }

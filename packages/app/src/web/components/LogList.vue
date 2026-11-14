@@ -10,6 +10,7 @@ import {
 import type { StoredLog } from "@h5-log/sdk";
 import { highlightLogText, tokenClass } from "../highlight.js";
 import {
+  clientLabel,
   formatTime,
   httpPayload,
   levelLabels,
@@ -50,7 +51,24 @@ function piecesFor(log: StoredLog) {
   return highlightLogText(text, props.query ?? "");
 }
 
-// Rule: 只连接当前列表里可见的同一请求记录；跨页或已淘汰的记录仍由详情面板说明。
+// Rule: 提示只标记每台设备某次采集的首条可见记录，不推断真实启动时间或断开状态。
+const reporting = computed(() => {
+  const seen = new Map<string, Set<string>>();
+  const starts = new Map<number, string>();
+  for (const log of props.logs) {
+    let sessions = seen.get(log.clientKey);
+    if (!sessions) {
+      sessions = new Set();
+      seen.set(log.clientKey, sessions);
+    }
+    if (sessions.has(log.sessionId)) continue;
+    starts.set(log.id, sessions.size === 0 ? "开始上报" : "重新开始上报");
+    sessions.add(log.sessionId);
+  }
+  return { starts, showDevice: seen.size > 1 };
+});
+
+// Rule: 只连接当前列表中同一设备、同次采集的请求记录。
 const relatedIds = computed(() => {
   const selected = props.logs.find((log) => log.id === props.selectedId);
   if (!selected || selected.source !== "http") return new Set<number>();
@@ -140,35 +158,46 @@ onBeforeUnmount(() => {
     >
       <path v-for="path in linkPaths" :key="path" :d="path" />
     </svg>
-    <button
-      v-for="log in logs"
-      :key="log.id"
-      :data-log-id="log.id"
-      type="button"
-      role="listitem"
-      class="log-row"
-      :class="[
-        `level-${log.level}`,
-        {
-          selected: log.id === selectedId,
-          related: isRelated(log),
-          failed: failed(log),
-        },
-      ]"
-      @click="emit('select', log.id)"
-    >
-      <span class="log-time">{{ formatTime(log.receivedAt) }}</span>
-      <span class="log-level">
-        <i class="level-dot" />{{ levelLabels[log.level] ?? log.level }}
-      </span>
-      <span class="log-source">{{ sourceLabels[log.source] ?? log.source }}</span>
-      <span class="log-text">
+    <template v-for="log in logs" :key="log.id">
+      <div
+        v-if="reporting.starts.has(log.id)"
+        class="reporting-marker"
+        :data-reporting-log-id="log.id"
+        role="separator"
+        :aria-label="`${reporting.showDevice ? clientLabel(log) + '，' : ''}${reporting.starts.get(log.id)}`"
+        title="这是这次采集的首条可见记录，不代表设备实时在线状态或实际启动时间。"
+      >
+        <span v-if="reporting.showDevice" class="reporting-device" :title="clientLabel(log)">{{ clientLabel(log) }}</span>
+        <span class="reporting-label">{{ reporting.starts.get(log.id) }}</span>
+      </div>
+      <button
+        :data-log-id="log.id"
+        type="button"
+        role="listitem"
+        class="log-row"
+        :class="[
+          `level-${log.level}`,
+          {
+            selected: log.id === selectedId,
+            related: isRelated(log),
+            failed: failed(log),
+          },
+        ]"
+        @click="emit('select', log.id)"
+      >
+        <span class="log-time">{{ formatTime(log.receivedAt) }}</span>
         <span
-          v-for="(piece, index) in piecesFor(log)"
-          :key="index"
-          :class="[tokenClass(piece.kind), { 'search-hit': piece.hit }]"
-        >{{ piece.text }}</span>
-      </span>
-    </button>
+          class="log-source"
+          :title="`${sourceLabels[log.source] ?? log.source} · ${levelLabels[log.level] ?? log.level}`"
+        >{{ sourceLabels[log.source] ?? log.source }}</span>
+        <span class="log-text">
+          <span
+            v-for="(piece, index) in piecesFor(log)"
+            :key="index"
+            :class="[tokenClass(piece.kind), { 'search-hit': piece.hit }]"
+          >{{ piece.text }}</span>
+        </span>
+      </button>
+    </template>
   </div>
 </template>

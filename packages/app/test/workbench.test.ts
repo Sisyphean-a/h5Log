@@ -212,6 +212,43 @@ describe("工作台状态", () => {
     },
   );
 
+  it("来源并集在查询、实时增量与本地历史中一致，清空后不限来源", async () => {
+    const store = new LogStore();
+    store.add([
+      log(1),
+      httpLog(2, "request", "request-a"),
+      { ...log(3, "error"), source: "error" },
+      { ...log(4), source: "custom" },
+    ]);
+    const snapshot = store.page({});
+    history = createLocalHistory()!;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const params = new URL(String(input), "http://localhost").searchParams;
+      return response(store.page({ source: params.get("source") ?? "" }));
+    });
+    workbench = createWorkbench({ history, fetchImpl });
+    workbench.handleHello({ serverId: snapshot.serverId, clients: snapshot.clients });
+    workbench.setFilter({ source: "console,http" });
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(workbench.state.logs.map((item) => item.source)).toEqual(["console", "http"]);
+
+    const incoming = store.add([
+      log(5),
+      httpLog(6, "response", "request-a"),
+      { ...log(7, "error"), source: "error" },
+    ]);
+    workbench.handleLogs({ logs: incoming, clients: store.clients() });
+    const expected = store.page({ source: "console,http" }).logs;
+    expect(workbench.state.logs).toEqual(expected);
+    await workbench.loadLocal(100);
+    expect(workbench.state.logs).toEqual(expected);
+
+    workbench.setFilter({ source: "" });
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(workbench.state.logs).toEqual(store.page({}).logs);
+    expect(new URL(String(fetchImpl.mock.calls.at(-1)![0]), "http://localhost").searchParams.has("source")).toBe(false);
+  });
+
   it("快照游标内的迟到事件不计入会话，新事件只计一次", async () => {
     const workbench = createWorkbench({
       fetchImpl: vi.fn().mockResolvedValue(response(page([log(10, "error")], 10))),

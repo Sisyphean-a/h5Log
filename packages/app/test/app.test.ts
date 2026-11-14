@@ -115,6 +115,61 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   wrapper.unmount();
 });
 
+it("来源支持多选且没有自定义入口，清空后恢复全部来源", async () => {
+  const logs: StoredLog[] = [
+    log(1, "控制台日志"),
+    { ...log(2, "接口日志"), source: "http" },
+    { ...log(3, "异常日志"), source: "error", level: "error" },
+    { ...log(4, "既有自定义日志"), source: "custom" },
+  ];
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) => ({ ok: true, json: async () => pageBody(logs) }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(4));
+    const select = wrapper.findAllComponents(NSelect)
+      .find((item) => item.props("placeholder") === "全部来源")!;
+    expect(select.props("multiple")).toBe(true);
+    expect(select.props("value")).toEqual([]);
+    expect(select.props("options").map((option) => option.value)).toEqual(["console", "error", "http"]);
+
+    select.vm.$emit("update:value", ["console", "http"]);
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((call) =>
+      new URL(String(call[0]), "http://localhost").searchParams.get("source") === "console,http",
+    )).toBe(true));
+    expect(wrapper.find(".list-head").text()).not.toContain("级别");
+
+    select.vm.$emit("update:value", []);
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(4));
+    expect(select.props("value")).toEqual([]);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("设备视图合并多次启动，不再提供会话筛选，提示不计入日志条数", async () => {
+  const logs = [log(1, "第一次启动"), { ...log(2, "第二次启动"), sessionId: "session-b" }, log(3, "第一次启动继续上报")];
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) => ({ ok: true, json: async () => pageBody(logs) }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(3));
+    expect(wrapper.findAllComponents(NSelect).map((item) => item.props("placeholder")))
+      .toEqual(["选择设备", "级别", "全部来源"]);
+    expect(wrapper.findAll(".reporting-label").map((item) => item.text()))
+      .toEqual(["开始上报", "重新开始上报"]);
+    expect(wrapper.find(".scope-meta .count").text()).toBe("3 条");
+    expect(fetchMock.mock.calls.every((call) =>
+      !new URL(String(call[0]), "http://localhost").searchParams.has("sessionId"),
+    )).toBe(true);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it("隐藏其他设备只收缩当前浏览器的设备候选，不删除服务端范围", async () => {
   localStorage.clear();
   const other = {

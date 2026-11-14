@@ -98,6 +98,42 @@ export function jsonText(value: unknown): string {
   }
 }
 
+function parseJsonStructure(text: string): object | undefined {
+  const value = text.trim();
+  if (value[0] !== "{" && value[0] !== "[") return undefined;
+  try {
+    return JSON.parse(value) as object;
+  } catch {
+    // Rule: 普通文本或不完整 JSON 不是解析错误，展示时保留原文。
+    return undefined;
+  }
+}
+
+/** Rule: 只在阅读视图展开完整的对象/数组字符串，不改变日志与复制数据。 */
+export function jsonDisplayText(value: unknown): string {
+  const pretty = (item: unknown): string => JSON.stringify(
+    item,
+    (_key, child: unknown) => typeof child === "string"
+      ? parseJsonStructure(child) ?? child
+      : child,
+    2,
+  ) ?? String(item);
+
+  if (typeof value !== "string") return pretty(value);
+  // Rule: 最多尝试首个对象和数组起点，支持日志前缀，避免逐字符试解析。
+  const starts = [...new Set([value.indexOf("{"), value.indexOf("[")])]
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+  for (const start of starts) {
+    const parsed = parseJsonStructure(value.slice(start));
+    if (parsed !== undefined) {
+      const prefix = value.slice(0, start).trimEnd();
+      return prefix ? `${prefix}\n${pretty(parsed)}` : pretty(parsed);
+    }
+  }
+  return value;
+}
+
 export type JsonTokenKind = "key" | "string" | "number" | "literal" | "punct" | "plain";
 
 export interface JsonToken {
@@ -108,8 +144,8 @@ export interface JsonToken {
 const JSON_ESCAPE = /^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/;
 
 /**
- * Rule: JSON 文本由本模块自己序列化，按词法切分即可高亮；不做 HTML 拼接，渲染层用文本节点。
- * Failure: 超过上限或非 JSON 文本退化为单个 plain token，避免生成数千个节点。
+ * Rule: 对展示文本做词法高亮；不做 HTML 拼接，渲染层用文本节点。
+ * Failure: 超过上限时返回单个纯文本 token，避免生成数千个节点。
  */
 export function jsonTokens(text: string, limit = 20000): JsonToken[] {
   if (text.length > limit) return [{ kind: "plain", text }];

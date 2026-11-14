@@ -3,6 +3,8 @@ export type LogTokenKind =
   | "tag"
   | "url"
   | "http-method"
+  | "http-prefix"
+  | "http-name"
   | "error-keyword"
   | "stack-prefix"
   | "stack-frame"
@@ -53,9 +55,9 @@ export function tokenizeLogText(text: string): LogToken[] {
   const cached = tokenCache.get(text);
   if (cached) return cached;
 
-  const tokens: LogToken[] = [];
-  let cursor = 0;
-  const tag = leadingTag(text);
+  const tokens = httpSummaryTokens(text);
+  let cursor = tokens.at(-1)?.end ?? 0;
+  const tag = cursor === 0 ? leadingTag(text) : undefined;
   if (tag) {
     if (tag.index > 0) {
       tokens.push({
@@ -164,6 +166,29 @@ export function tokenClass(kind: LogTokenKind): string | undefined {
 
 function plainPiece(token: LogToken): LogPiece {
   return { text: token.text, kind: token.kind, hit: false };
+}
+
+/** Rule: 接口名称只取查询串/片段之前的末段路径，前缀与参数保留原文但降低权重。 */
+function httpSummaryTokens(text: string): LogToken[] {
+  const match = /^([→←×]\s+[A-Za-z]+\s+)(\S+)/.exec(text);
+  if (!match) return [];
+  const urlStart = match[1]!.length;
+  const url = match[2]!;
+  const query = url.search(/[?#]/);
+  const path = query < 0 ? url : url.slice(0, query);
+  const authorityEnd = /^[a-z][a-z\d+.-]*:\/\/[^/]+/i.exec(path)?.[0].length ?? 0;
+  const nameEnd = path.replace(/\/+$/, "").length;
+  const nameStart = Math.max(authorityEnd, path.lastIndexOf("/", nameEnd - 1) + 1);
+  const hasName = nameEnd > nameStart;
+  const start = urlStart + (hasName ? nameStart : 0);
+  const end = urlStart + (hasName ? nameEnd : path.length);
+  const ranges: Array<{ kind: LogTokenKind; start: number; end: number }> = [
+    { kind: "http-prefix", start: 0, end: start },
+    { kind: "http-name", start, end },
+    { kind: "http-prefix", start: end, end: match[0].length },
+  ];
+  return ranges.filter((range) => range.end > range.start)
+    .map((range) => ({ ...range, text: text.slice(range.start, range.end) }));
 }
 
 function leadingTag(

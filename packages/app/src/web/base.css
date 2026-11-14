@@ -9,6 +9,10 @@
   background: #eef2f6;
   --accent: #3568d4;
   --muted: #52647d;
+  --info: #52647d;
+  --debug: #2856a0;
+  --warn: #8a5410;
+  --error: #b42318;
   --line: #d9e1eb;
   --mono: var(--font-mono);
 }

@@ -21,7 +21,7 @@ const rows = computed(() => {
     ["保留时长", `${service.retentionHours} 小时`],
     ["当前条数", `${service.logs} / ${limits.maxLogs}`],
     ["当前体积", `${mb(service.bytes)} / ${mb(limits.maxBytes)}`],
-    ["客户端 / 会话", `${service.clients} / ${service.sessions}`],
+    ["设备", String(service.clients)],
     ["查看连接", `${service.subscribers} / ${limits.maxSubscribers}`],
     ["累计接收 / 淘汰", `${service.received} / ${service.evicted}`],
     ["单条上限", `${Math.round(limits.maxEventBytes / 1024)} KiB`],

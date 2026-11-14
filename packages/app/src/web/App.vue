@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   NButton,
   NConfigProvider,
   NInput,
   NSelect,
   type GlobalThemeOverrides,
+  type SelectRenderLabel,
 } from "naive-ui";
 import type { LogClient } from "@h5-log/sdk";
 import { createWorkbench } from "./workbench.js";
@@ -121,23 +122,16 @@ const levelOptions = [
   { label: "信息", value: "info" },
   { label: "调试", value: "debug" },
 ];
+const renderLevelLabel: SelectRenderLabel = (option) => h(
+  "span",
+  { class: ["level-label", `level-${option.value}`] },
+  String(option.label),
+);
 const sourceOptions = [
   { label: "控制台", value: "console" },
   { label: "异常", value: "error" },
   { label: "接口", value: "http" },
-  { label: "自定义", value: "custom" },
 ];
-const sessionOptions = computed(() =>
-  [...state.sessions]
-    .filter(
-      (item) => !state.filter.clientKey || item.clientKey === state.filter.clientKey,
-    )
-    .sort((a, b) => b.lastSeen - a.lastSeen)
-    .map((item) => ({
-      label: `${item.sessionId.slice(0, 6)} · ${item.logCount} 条 · ${relativeTime(item.lastSeen)}`,
-      value: item.sessionId,
-    })),
-);
 
 const currentClient = computed<LogClient | undefined>(() =>
   state.clients.find((client) => client.key === state.filter.clientKey),
@@ -146,8 +140,8 @@ const scopeTitle = computed(() =>
   currentClient.value
     ? clientLabel(currentClient.value)
     : state.filter.clientKey
-      ? "客户端已过期"
-      : "全部客户端",
+      ? "设备暂无记录"
+      : "全部设备",
 );
 const connectionText = computed(() =>
   state.connection === "open"
@@ -171,13 +165,9 @@ const levelValue = computed<string | null>({
   get: () => state.filter.level || null,
   set: (value) => workbench.setFilter({ level: value ?? "" }),
 });
-const sourceValue = computed<string | null>({
-  get: () => state.filter.source || null,
-  set: (value) => workbench.setFilter({ source: value ?? "" }),
-});
-const sessionValue = computed<string | null>({
-  get: () => state.filter.sessionId || null,
-  set: (value) => workbench.setFilter({ sessionId: value ?? "" }),
+const sourceValue = computed<string[]>({
+  get: () => state.filter.source ? state.filter.source.split(",") : [],
+  set: (value) => workbench.setFilter({ source: value.join(",") }),
 });
 
 function readHiddenBefore(): number {
@@ -375,13 +365,13 @@ onBeforeUnmount(() => {
             clearable
             :consistent-menu-width="false"
             :menu-props="{ style: { maxWidth: 'calc(100vw - 32px)' } }"
-            placeholder="选择客户端"
+            placeholder="选择设备"
             :options="clientOptions"
           />
 
           <div class="scope-meta">
             <span class="count">{{ state.total }} 条</span>
-            <span class="conn" :data-state="state.connection">
+            <span class="conn" :data-state="state.connection" title="工作台与日志服务的连接状态，不代表设备在线状态">
               <i class="conn-dot" />{{ connectionText }}
             </span>
             <span v-if="state.localMode" class="badge">本地历史</span>
@@ -425,20 +415,16 @@ onBeforeUnmount(() => {
               clearable
               placeholder="级别"
               :options="levelOptions"
+              :render-label="renderLevelLabel"
             />
             <NSelect
               v-model:value="sourceValue"
               size="small"
+              multiple
               clearable
-              placeholder="来源"
+              placeholder="全部来源"
+              :max-tag-count="2"
               :options="sourceOptions"
-            />
-            <NSelect
-              v-model:value="sessionValue"
-              size="small"
-              clearable
-              placeholder="会话"
-              :options="sessionOptions"
             />
           </div>
 
@@ -503,7 +489,7 @@ onBeforeUnmount(() => {
           <span
             class="conn"
             :data-state="state.connection"
-            :title="connectionText"
+            title="工作台与日志服务的连接状态，不代表设备在线状态"
           >
             <i class="conn-dot" />{{ connectionText }}
           </span>
@@ -512,7 +498,7 @@ onBeforeUnmount(() => {
         <div class="body">
           <main ref="listEl" class="workspace" @scroll="onScroll">
             <div v-if="visibleLogs.length > 0" class="list-head">
-              <span>时间</span><span>级别</span><span>来源</span><span>内容</span>
+              <span>时间</span><span>来源</span><span>内容</span>
             </div>
             <div v-if="visibleLogs.length === 0" class="empty">
               <p class="empty-title">
@@ -556,7 +542,6 @@ onBeforeUnmount(() => {
             :detail="state.detail"
             @close="workbench.closeDetail()"
             @copy="showToast('已复制详情')"
-            @select="openDetail"
           />
         </div>
       </div>
