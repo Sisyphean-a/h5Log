@@ -36,19 +36,23 @@ afterEach(async () => {
     app.server.close((error) => (error ? reject(error) : resolve())),
   );
 });
-async function stream() {
-  const response = await fetch(`${origin}/api/stream`);
+async function stream(query = "", encoding = "gzip") {
+  const response = await fetch(`${origin}/api/stream${query}`, { headers: { "Accept-Encoding": encoding } });
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  async function next(name: string): Promise<any> {
+  async function next(name?: string): Promise<any> {
     while (true) {
       const boundary = buffer.indexOf("\n\n");
       if (boundary !== -1) {
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
-        if (frame.startsWith(`event: ${name}\n`))
-          return JSON.parse(frame.split("\ndata: ")[1]!);
+        if (frame.startsWith("event: ")) {
+          const type = frame.slice(7, frame.indexOf("\n"));
+          const data = JSON.parse(frame.split("\ndata: ")[1]!);
+          if (!name) return { type, data };
+          if (type === name) return data;
+        }
         continue;
       }
       const result = await reader.read();
@@ -57,7 +61,7 @@ async function stream() {
     }
   }
   await next("hello");
-  return { next, close: () => reader.cancel() };
+  return { next, response, close: () => reader.cancel() };
 }
 async function post(events: LogEvent[]) {
   return fetch(`${origin}/api/logs`, {
@@ -67,7 +71,34 @@ async function post(events: LogEvent[]) {
   });
 }
 
-describe("容量淘汰通知", () => {
+describe("实时分发与容量淘汰通知", () => {
+  it("按设备只发送该设备正文，仍发送全局目录，压缩流立即可读", async () => {
+    const key = encodeURIComponent(JSON.stringify(["26", "test", "phone-a"]));
+    const selected = await stream(`?clientKey=${key}`);
+    const other = await stream("?clientKey=not-selected", "identity");
+    expect(selected.response.headers.get("Content-Encoding")).toBe("gzip");
+    expect(other.response.headers.get("Content-Encoding")).toBeNull();
+    await post([event({ eventId: "selected" }), event({ deviceId: "phone-b", eventId: "other" })]);
+    const batch = await selected.next();
+    expect(batch.type).toBe("logs");
+    expect(batch.data.logs.map((log: LogEvent) => log.eventId)).toEqual(["selected"]);
+    expect(batch.data.clients).toHaveLength(2);
+    expect(batch.data.evictedThroughId).toBe(0);
+    expect((await other.next()).type).toBe("clients");
+    await post([event({ deviceId: "phone-b" })]);
+    const directory = await selected.next();
+    expect(directory.type).toBe("clients");
+    expect(directory.data.evictedThroughId).toBe(1);
+    await selected.close();
+    await other.close();
+  });
+
+  it("订阅范围支持应用和环境，不把阅读筛选混入采集范围", async () => {
+    const viewer = await stream("?appId=26&environment=test&level=error&search=missing");
+    await post([event({ eventId: "matched" }), event({ appId: "18", eventId: "other-app" })]);
+    expect((await viewer.next("logs")).logs.map((log: LogEvent) => log.eventId)).toEqual(["matched"]);
+    await viewer.close();
+  });
   it("通知已连接查看者清理被容量淘汰的正文和会话", async () => {
     const viewer = await stream();
     const first = event({
@@ -87,13 +118,10 @@ describe("容量淘汰通知", () => {
     });
     await post([first]);
     await viewer.next("logs");
-    await viewer.next("clients");
     await post([second]);
     await viewer.next("logs");
-    await viewer.next("clients");
     await post([third]);
-    await viewer.next("logs");
-    const update = (await viewer.next("clients")) as ClientUpdate;
+    const update = (await viewer.next("logs")) as ClientUpdate;
     expect(update.evictedThroughId).toBe(1);
     expect(update.clients.map((client) => client.deviceId)).toEqual(["new"]);
     const page = (await (await fetch(`${origin}/api/logs`)).json()) as LogPage;

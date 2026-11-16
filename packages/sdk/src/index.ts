@@ -58,6 +58,8 @@ function deviceId(appId: string): string {
  * 启用后自动采集 console 和全局异常；桥接、业务输出继续使用原有 console，无需额外接入。
  * Axios 使用 @h5-log/sdk/axios 的 attachAxiosLogger；原生 Fetch 设置 captureFetch: true。
  * 设备和会话标识、快照、有限队列、合批及失败退避均由 SDK 管理，不阻塞业务等待上传。
+ * 快照与 JSON 序列化仍是同步开销，高频大对象可能影响宿主帧率。
+ * 大批次可原生异步 gzip 压缩，先更新日志服务再更新 SDK；原生暂停 WebView 时不保证上传完成。
  *
  * enabled 必须由接入项目显式判断，生产传 false；SDK 不自行识别构建环境。
  * 配置无效时禁用并通过 getStatus().lastError 说明；一个页面只保留一个启用的采集器。
@@ -197,22 +199,41 @@ export function createLogger(options: LoggerOptions): Logger {
       queueBytes -= next.bytes;
       bytes += next.bytes + 1;
     }
-    const body = `{"events":[${batch.map((item) => item.text).join(",")}]}`;
+    const text = `{"events":[${batch.map((item) => item.text).join(",")}]}`;
     controller = new AbortController();
     const requestController = controller;
-    const timeout = setTimeout(() => requestController.abort(), 5000);
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(requestController.signal.reason ?? new Error("日志上传已取消"));
+      requestController.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    // Guarantee: 取消信号即使未被底层请求响应，也不能永久占住发送锁。
+    const timeout = setTimeout(() => requestController.abort(new Error("日志上传超时（5 秒）")), 5000);
     inFlight = (async () => {
       try {
-        const response = await Promise.resolve().then(() =>
-          nativeFetch!(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
+        const upload = (async () => {
+          let body: string | ArrayBuffer = text;
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          // Rule: 小批次不压缩；宿主具备原生流式压缩能力时才异步处理大批次。
+          if (bytes >= 8 * 1024 && typeof CompressionStream !== "undefined") {
+            const compressed = await new Response(
+              new Response(text).body!.pipeThrough(new CompressionStream("gzip"), { signal: requestController.signal }),
+            ).arrayBuffer();
+            if (compressed.byteLength < bytes) {
+              body = compressed;
+              headers["Content-Encoding"] = "gzip";
+            }
+          }
+          if (!active || requestController.signal.aborted)
+            throw requestController.signal.reason ?? new Error("日志采集已停止");
+          return nativeFetch!(endpoint, {
+            method: "POST", headers, body,
             signal: requestController.signal,
-            keepalive: bytes < 60 * 1024,
+            keepalive: (typeof body === "string" ? bytes : body.byteLength) < 60 * 1024,
             credentials: "omit",
-          }),
-        );
+          });
+        })();
+        const response = await Promise.race([upload, cancelled]);
         if (!response.ok) {
           if (
             response.status >= 400 &&
@@ -241,6 +262,7 @@ export function createLogger(options: LoggerOptions): Logger {
         lastError = error instanceof Error ? error.message : "日志服务不可用";
       } finally {
         clearTimeout(timeout);
+        requestController.signal.removeEventListener("abort", onAbort);
         controller = undefined;
         inFlight = undefined;
       }
@@ -321,20 +343,27 @@ export function createLogger(options: LoggerOptions): Logger {
     const onPageHide = (): void => {
       void flush();
     };
-    const onOnline = (): void => {
-      retryAt = 0;
-      void flush();
+    const retryNow = (): void => {
+      controller?.abort(new Error("网络或页面恢复，取消旧上传"));
+      void (inFlight ?? Promise.resolve()).then(() => {
+        if (!active) return;
+        retryAt = 0;
+        void flush();
+      });
     };
     const onVisibility = (): void => {
-      if (document.visibilityState === "hidden") void flush();
+      if (document.visibilityState === "visible") retryNow();
+      else void flush();
     };
     window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", retryNow);
+    window.addEventListener("online", retryNow);
     document.addEventListener("visibilitychange", onVisibility);
     restore.push(() => {
       clearInterval(timer);
       window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", retryNow);
+      window.removeEventListener("online", retryNow);
       document.removeEventListener("visibilitychange", onVisibility);
     });
   }

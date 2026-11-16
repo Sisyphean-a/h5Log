@@ -97,7 +97,7 @@ export interface Logger {
   readonly context: Readonly<LogContext>;
   /** 底层记录入口，供采集器或显式自定义记录使用；普通日志无需改为调用此方法。 */
   record(source: LogSource, level: LogLevel, ...args: unknown[]): void;
-  /** 尝试上传一批；退避期间不强制重试，失败不向业务抛出，不保证清空整个队列。 */
+  /** 尝试上传一批；空闲且无需异步压缩时立即发起请求。退避期间不强制重试，不保证清空整个队列或在 WebView 暂停前送达；失败不向业务抛出。 */
   flush(): Promise<void>;
   /** 恢复 console、Fetch 和异常监听，取消上传并清空队列；Axios 另调用挂载返回的 detach。 */
   stop(): void;

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
+import { gzipSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import type { LogEvent, LogPage } from "@h5-log/sdk";
 import { createLogServer, LogStore } from "../src/server/index.js";
@@ -74,6 +75,39 @@ async function subscriber() {
 }
 
 describe("日志服务的公开 HTTP/SSE 契约", () => {
+  it("接受 gzip 上传并压缩查询响应，原始日志与预检头保持完整", async () => {
+    const log = event({ args: ["完整正文".repeat(1500)] });
+    const uploaded = await fetch(`${origin}/api/logs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+      body: gzipSync(JSON.stringify({ events: [log] })),
+    });
+    expect(uploaded.status).toBe(202);
+    const compressed = await fetch(`${origin}/api/logs`, { headers: { "Accept-Encoding": "gzip" } });
+    expect(compressed.headers.get("Content-Encoding")).toBe("gzip");
+    expect(compressed.headers.get("Vary")).toContain("Accept-Encoding");
+    expect(((await compressed.json()) as LogPage).logs[0]!.args).toEqual(log.args);
+    const plain = await fetch(`${origin}/api/logs`, { headers: { "Accept-Encoding": "gzip;q=0, *;q=1" } });
+    expect(plain.headers.get("Content-Encoding")).toBeNull();
+    expect(((await plain.json()) as LogPage).logs[0]!.args).toEqual(log.args);
+    const preflight = await fetch(`${origin}/api/logs`, { method: "OPTIONS", headers: { Origin: "https://h5.test" } });
+    expect(preflight.headers.get("Access-Control-Allow-Headers")).toContain("Content-Encoding");
+  });
+
+  it("拒绝损坏、未知编码和解压超限的批次，不写入部分日志", async () => {
+    for (const [encoding, body, status] of [
+      ["gzip", Buffer.from("not-gzip"), 400],
+      ["br", Buffer.from("{}"), 415],
+      ["gzip", gzipSync("x".repeat(1024 * 1024 + 1)), 413],
+      ["gzip", gzipSync("not-json"), 400],
+    ] as const) {
+      const result = await fetch(`${origin}/api/logs`, {
+        method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": encoding }, body,
+      });
+      expect(result.status).toBe(status);
+    }
+    expect((await page()).logs).toHaveLength(0);
+  });
   it("接收原始测试数据，重复上传不产生重复日志", async () => {
     const log = event();
     const response = await post([log]);

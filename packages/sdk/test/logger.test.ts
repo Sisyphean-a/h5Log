@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLogger } from "../src/index.js";
 import type { Logger } from "../src/types.js";
+import { CompressionStream as NativeCompressionStream } from "node:stream/web";
+import { gunzipSync } from "node:zlib";
 
 let logger: Logger | undefined;
 let upload: ReturnType<typeof vi.fn>;
@@ -9,6 +11,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   upload = vi.fn().mockResolvedValue({ ok: true, status: 202 });
   vi.stubGlobal("fetch", upload);
+  vi.stubGlobal("CompressionStream", undefined);
 });
 afterEach(() => {
   logger?.stop();
@@ -34,6 +37,135 @@ function sent() {
 }
 
 describe("SDK 采集和生命周期", () => {
+  it.each(["name", "message", "stack", "cause"] as const)("Error 的 %s 访问器不会被日志采集执行", async (property) => {
+    const client = start();
+    const error = new Error("unsafe error");
+    const getter = vi.fn(() => { throw new Error("getter must not run"); });
+    Object.defineProperty(error, property, { configurable: true, get: getter });
+    client.record("error", "error", error);
+    await client.flush();
+    expect(getter).not.toHaveBeenCalled();
+    expect(sent().events[0]!.args[0]).toMatchObject({ [property]: "[Getter]" });
+  });
+
+  it("Error 继承的访问器也不执行，普通错误仍保留类型、堆栈与原因", async () => {
+    const client = start();
+    const getter = vi.fn(() => "UnsafeError");
+    const unsafe = new Error("inherited getter");
+    Object.setPrototypeOf(unsafe, Object.create(Error.prototype, { name: { get: getter } }));
+    client.record("error", "error", unsafe);
+    client.record("error", "error", new TypeError("outer error", { cause: new Error("inner error") }));
+    await client.flush();
+    expect(getter).not.toHaveBeenCalled();
+    expect(sent().events[0]!.args[0]).toMatchObject({ name: "[Getter]" });
+    const normal = sent().events[1]!.args[0] as { stack: string };
+    expect(normal).toMatchObject({ name: "TypeError", message: "outer error", cause: { name: "Error", message: "inner error" } });
+    expect(normal.stack).toContain("outer error");
+  });
+
+  it("自定义堆栈格式化访问器也不会被原生惰性 stack 间接执行", async () => {
+    const client = start();
+    const original = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
+    const error = new Error("custom formatter");
+    const getter = vi.fn(() => undefined);
+    try {
+      Object.defineProperty(Error, "prepareStackTrace", { configurable: true, get: getter });
+      client.record("error", "error", error);
+      await client.flush();
+    } finally {
+      if (original) Object.defineProperty(Error, "prepareStackTrace", original);
+      else Reflect.deleteProperty(Error, "prepareStackTrace");
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+  it("大批次原生异步压缩，小批次和不支持压缩的宿主仍用原始 JSON", async () => {
+    vi.useRealTimers();
+    const client = start();
+    const text = "保留完整业务正文".repeat(600);
+    client.record("custom", "info", text);
+    await client.flush();
+    expect(upload.mock.calls[0]![1].headers["Content-Encoding"]).toBeUndefined();
+    expect(sent().events[0]!.args).toEqual([text]);
+    vi.stubGlobal("CompressionStream", NativeCompressionStream);
+    client.record("custom", "info", text);
+    await client.flush();
+    const request = upload.mock.calls[1]![1];
+    expect(request.headers["Content-Encoding"]).toBe("gzip");
+    const bytes = new Uint8Array(request.body as ArrayBuffer);
+    const decoded = gunzipSync(bytes).toString("utf8");
+    expect(JSON.parse(decoded).events[0].args).toEqual([text]);
+    expect(bytes.length).toBeLessThan(new TextEncoder().encode(decoded).length / 2);
+    client.record("custom", "info", "small");
+    await client.flush();
+    expect(upload.mock.calls[2]![1].headers["Content-Encoding"]).toBeUndefined();
+  });
+
+  it("压缩异常不向宿主抛出、不丢批次，也不伪装上传成功", async () => {
+    vi.stubGlobal("CompressionStream", class {
+      constructor() { throw new Error("compression failed"); }
+    });
+    const client = start();
+    client.record("custom", "info", "payload".repeat(2000));
+    await expect(client.flush()).resolves.toBeUndefined();
+    expect(upload).not.toHaveBeenCalled();
+    expect(client.getStatus()).toMatchObject({ queued: 1, sent: 0, lastError: "compression failed", state: "retrying" });
+  });
+
+  it("小批次 flush 在返回前发起请求，不等待定时器或微任务", async () => {
+    const client = start();
+    client.record("custom", "info", "before native navigation");
+    const sending = client.flush();
+    expect(upload).toHaveBeenCalledOnce();
+    expect(client.getStatus().state).toBe("sending");
+    await sending;
+    expect(client.getStatus().sent).toBe(1);
+  });
+
+  it("上传即使未响应取消也在五秒后释放发送锁并继续重试", async () => {
+    upload.mockImplementationOnce(() => new Promise(() => {}));
+    const client = start();
+    client.record("custom", "info", "retained");
+    const sending = client.flush();
+    await vi.advanceTimersByTimeAsync(5000);
+    await sending;
+    expect(client.getStatus()).toMatchObject({ queued: 1, state: "retrying" });
+    expect(client.getStatus().lastError).toContain("超时");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(client.getStatus()).toMatchObject({ sent: 1, queued: 0, lastError: null });
+  });
+
+  it("联网恢复立即取消旧上传并重试，停止后不再因生命周期事件发送", async () => {
+    upload.mockImplementationOnce(() => new Promise(() => {}));
+    const client = start();
+    client.record("custom", "info", "retained");
+    void client.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload.mock.calls[0]![1].signal.aborted).toBe(true);
+    expect(client.getStatus().sent).toBe(1);
+    client.stop();
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("pageshow"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("页面恢复可见立即重试，不等待断网退避结束", async () => {
+    upload.mockRejectedValueOnce(new Error("proxy switched"));
+    const client = start();
+    client.record("custom", "info", "retained");
+    await client.flush();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(client.getStatus()).toMatchObject({ sent: 1, queued: 0 });
+  });
   it("显式关闭时不改写 console、不上传", async () => {
     const original = console.info;
     const client = start({ enabled: false, captureConsole: true });

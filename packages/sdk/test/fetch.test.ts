@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachFetchLogger } from "../src/fetch.js";
+import { snapshot } from "../src/serialize.js";
 import type { Logger } from "../src/types.js";
 
 function recorder() {
@@ -13,9 +14,53 @@ function recorder() {
   return { logger, events };
 }
 let detach = (): void => {};
-afterEach(() => detach());
+afterEach(() => { detach(); vi.restoreAllMocks(); });
 
 describe("fetch 采集", () => {
+  it.each(["params", "form"] as const)("%s 请求正文在遍历源数据时就受预算限制，原正文不变", async (kind) => {
+    const body = kind === "params" ? new URLSearchParams() : new FormData();
+    for (let i = 0; i < 10000; i++) body.append("same", String(i));
+    const entries = body.entries.bind(body);
+    let visited = 0;
+    const iterate = function* () { for (const entry of entries()) { visited++; yield entry; } };
+    Object.defineProperty(body, "entries", { configurable: true, value: iterate });
+    Object.defineProperty(body, Symbol.iterator, { configurable: true, value: iterate });
+    const stringify = body instanceof URLSearchParams ? vi.spyOn(body, "toString") : undefined;
+    const response = new Response(null, { status: 204 });
+    const original = vi.fn().mockResolvedValue(response);
+    const target = { fetch: original as typeof fetch };
+    const { logger, events } = recorder();
+    logger.record = (_source, level, data) => { events.push({ level, data: snapshot(data) }); };
+    detach = attachFetchLogger(logger, target);
+    const init = { method: "POST", body };
+    expect(await target.fetch("https://business.test/form", init)).toBe(response);
+    expect(original).toHaveBeenCalledExactlyOnceWith("https://business.test/form", init);
+    expect(visited).toBeGreaterThan(0);
+    expect(visited).toBeLessThanOrEqual(2000);
+    if (stringify) expect(stringify).not.toHaveBeenCalled();
+    expect(events[0]!.data.body.slice(0, 2)).toEqual([{ name: "same", value: "0" }, { name: "same", value: "1" }]);
+    expect(JSON.stringify(events[0]!.data)).toContain("快照容量上限");
+    expect(body.getAll("same")).toHaveLength(10000);
+  });
+
+  it("FormData 保留重复字段和文件元信息，不读取文件正文", async () => {
+    const body = new FormData();
+    body.append("name", "first");
+    body.append("name", "second");
+    body.append("upload", new Blob(["file body"], { type: "text/plain" }), "sample.txt");
+    const file = body.get("upload") as File;
+    const read = vi.spyOn(file, "arrayBuffer");
+    const target = { fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch };
+    const { logger, events } = recorder();
+    detach = attachFetchLogger(logger, target);
+    await target.fetch("https://business.test/form", { method: "POST", body });
+    expect(events[0]!.data.body).toEqual([
+      { name: "name", value: "first" },
+      { name: "name", value: "second" },
+      { name: "upload", value: { file: "sample.txt", type: "text/plain", size: 9 } },
+    ]);
+    expect(read).not.toHaveBeenCalled();
+  });
   it("保留原始 Response、记录请求正文和 JSON 响应", async () => {
     const response = new Response(
       JSON.stringify({ code: 1000, data: { id: 26 } }),

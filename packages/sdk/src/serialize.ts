@@ -3,6 +3,25 @@ import type { JsonValue } from "./types.js";
 const MAX_DEPTH = 12;
 const MAX_ITEMS = 2000;
 const MAX_STRING = 64 * 1024;
+const nativeStackGetter = descriptorOf(new Error(), "stack")?.get;
+const initialStackFormatter: unknown =
+  Object.getOwnPropertyDescriptor(Error, "prepareStackTrace")?.value;
+
+function descriptorOf(input: object, key: string): PropertyDescriptor | undefined {
+  for (
+    let owner: object | null = input;
+    owner;
+    owner = Object.getPrototypeOf(owner) as object | null
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+    if (descriptor) return descriptor;
+  }
+  return undefined;
+}
+
+function descriptorValue(descriptor: PropertyDescriptor | undefined): unknown {
+  return descriptor && !("value" in descriptor) ? "[Getter]" : descriptor?.value;
+}
 
 /** Rule: 整条快照共享值数量与字符预算，字段名和特殊类型也不能绕过限制。 */
 export function snapshot(value: unknown): JsonValue {
@@ -105,10 +124,28 @@ export function snapshot(value: unknown): JsonValue {
         [key: string]: JsonValue;
       };
       if (input instanceof Error) {
-        result.name = text(input.name);
-        result.message = visit(input.message, depth + 1);
-        result.stack = visit(input.stack, depth + 1);
-        if ("cause" in input) result.cause = visit(input.cause, depth + 1);
+        const name = descriptorOf(input, "name");
+        const message = descriptorOf(input, "message");
+        result.name = visit(descriptorValue(name), depth + 1);
+        result.message = visit(descriptorValue(message), depth + 1);
+        const formatter = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
+        // Rule: 惰性堆栈可能间接读取 name/message 或格式化钩子，只在数据字段安全时展开。
+        const safeStack =
+          name && "value" in name && typeof name.value === "string" &&
+          message && "value" in message && typeof message.value === "string" &&
+          (!formatter || "value" in formatter) &&
+          formatter?.value === initialStackFormatter;
+        const marker = exhausted();
+        if (marker) result.stack = marker;
+        else if (safeStack) {
+          const stack = descriptorOf(input, "stack");
+          const value = stack?.get && stack.get === nativeStackGetter
+            ? stack.get.call(input)
+            : descriptorValue(stack);
+          result.stack = visit(value, depth + 1);
+        } else result.stack = "[Getter]";
+        const cause = descriptorOf(input, "cause");
+        if (cause) result.cause = visit(descriptorValue(cause), depth + 1);
       }
       for (const key in input) {
         if (!Object.prototype.hasOwnProperty.call(input, key)) continue;

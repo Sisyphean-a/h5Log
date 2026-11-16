@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { CompressionStream as NativeCompressionStream } from "node:stream/web";
 import type { AddressInfo } from "node:net";
 import type { LogPage, Logger, LoggerOptions } from "../src/types.js";
 import { createLogger } from "../src/index.js";
@@ -8,6 +9,8 @@ import { createLogServer } from "../../app/src/server/index.js";
 const instances: Logger[] = [];
 afterEach(() => {
   for (const logger of instances.splice(0)) logger.stop();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("SDK 允许的上下文边界可被真实服务端接受，保留原始测试内容", async () => {
@@ -47,6 +50,31 @@ it("SDK 允许的上下文边界可被真实服务端接受，保留原始测试
     await new Promise<void>((resolve, reject) =>
       app.server.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+});
+
+it("SDK 原生压缩通过真实 HTTP 服务解压，查询返回相同正文且重试不重复", async () => {
+  vi.stubGlobal("CompressionStream", NativeCompressionStream);
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  const app = createLogServer();
+  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/api/logs`;
+  const logger = createLogger({ enabled: true, appId: "26", endpoint, captureConsole: false });
+  instances.push(logger);
+  try {
+    const payload = { token: "fake-token", body: "完整请求正文".repeat(3000) };
+    logger.record("custom", "info", payload);
+    await logger.flush();
+    const [, request] = fetchSpy.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect((request!.headers as Record<string, string>)["Content-Encoding"]).toBe("gzip");
+    expect(logger.getStatus()).toMatchObject({ sent: 1, lastError: null });
+    expect((await (await fetch(endpoint, request)).json())).toEqual({ accepted: 0 });
+    const result = await fetch(endpoint);
+    expect(result.headers.get("Content-Encoding")).toBe("gzip");
+    expect(((await result.json()) as LogPage).logs[0]!.args).toEqual([payload]);
+  } finally {
+    logger.stop();
+    await app.close();
   }
 });
 

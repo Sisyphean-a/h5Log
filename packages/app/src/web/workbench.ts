@@ -36,6 +36,7 @@ export interface WorkbenchState {
   follow: boolean;
   connection: Connection;
   streamReady: boolean;
+  lastStreamAt: number | undefined;
   selectedId: number | undefined;
   detail: LogDetail | undefined;
   service: ServiceStatus | undefined;
@@ -87,14 +88,17 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     follow: true,
     connection: "connecting",
     streamReady: false,
+    lastStreamAt: undefined,
     selectedId: undefined,
     detail: undefined,
     service: undefined,
   }) as WorkbenchState;
 
   let stream: StreamLike | undefined;
+  let streamTimer: ReturnType<typeof setTimeout> | undefined;
   let pageController: AbortController | undefined;
   let requestVersion = 0;
+  const reads = new Set<AbortController>();
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let pending: StoredLog[] = [];
   let pendingScoped: StoredLog[] = [];
@@ -116,6 +120,37 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       noticeTimer = setTimeout(() => {
         state.notice = "";
       }, error ? 8000 : 5000);
+  }
+
+  async function readJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+    const controller = new AbortController();
+    reads.add(controller);
+    const relay = (): void => controller.abort(signal?.reason);
+    if (signal?.aborted) relay();
+    else signal?.addEventListener("abort", relay, { once: true });
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(controller.signal.reason);
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const timer = setTimeout(() => controller.abort(new Error("请求超时（10 秒）")), 10000);
+    try {
+      return await Promise.race([
+        (async () => {
+          if (controller.signal.aborted) throw controller.signal.reason;
+          const response = await fetchImpl(url, { signal: controller.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json() as T;
+        })(),
+        cancelled,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", relay);
+      reads.delete(controller);
+    }
   }
 
   function matches(log: StoredLog): boolean {
@@ -175,11 +210,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const params = queryParams();
     if (before !== undefined) params.set("before", String(before));
     try {
-      const response = await fetchImpl(`./api/logs?${params}`, {
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const page = (await response.json()) as LogPage;
+      const page = await readJson<LogPage>(`./api/logs?${params}`, controller.signal);
       if (version !== requestVersion || lifecycle !== "active") return;
       if (state.serverId && state.serverId !== page.serverId) {
         resetForRestart(page.serverId);
@@ -240,6 +271,16 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       if (version !== requestVersion || lifecycle !== "active") return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       state.loading = false;
+      historyBefore = previousBefore;
+      const buffered = [...new Map([...pendingScoped, ...pending].map((log) => [log.id, log])).values()]
+        .sort((a, b) => a.id - b.id);
+      pending = [];
+      pendingScoped = [];
+      pendingMatchIds = new Set();
+      pendingEventIds = new Set();
+      pendingCursor = 0;
+      pendingOverflow = false;
+      handleLogs({ logs: buffered, clients: state.clients });
       state.error = error instanceof Error ? error.message : "网络错误";
       notice(`读取失败：${state.error}`, true);
     }
@@ -306,15 +347,25 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     void load();
   }
 
+  function streamQuery(): string {
+    const params = new URLSearchParams();
+    for (const key of ["appId", "environment", "clientKey"] as const)
+      if (state.filter[key]) params.set(key, state.filter[key]);
+    return params.toString();
+  }
+
   function setFilter(patch: Partial<FilterState>): void {
+    const previousScope = streamQuery();
     Object.assign(state.filter, patch);
+    if (stream && previousScope !== streamQuery()) {
+      state.streamReady = false;
+      connect();
+    }
     resetView();
   }
 
   function setScope(patch: Partial<FilterState>): void {
-    Object.assign(state.filter, patch);
-    if (patch.clientKey !== undefined) state.filter.sessionId = "";
-    resetView();
+    setFilter({ ...patch, ...(patch.clientKey !== undefined ? { sessionId: "" } : {}) });
   }
 
   function clearView(): void {
@@ -481,9 +532,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     try {
       const params = queryParams();
       params.set("limit", "1");
-      const response = await fetchImpl(`./api/logs?${params}`);
-      if (!response.ok) return;
-      const page = (await response.json()) as LogPage;
+      const page = await readJson<LogPage>(`./api/logs?${params}`);
       if (version !== requestVersion || lifecycle !== "active") return;
       state.sessions = page.sessions;
       state.clients = page.clients;
@@ -514,9 +563,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         }
       : undefined;
     try {
-      const response = await fetchImpl(`./api/logs/${id}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const detail = (await response.json()) as LogDetail;
+      const detail = await readJson<LogDetail>(`./api/logs/${id}`);
       if (generation !== lifecycleVersion || state.selectedId !== id) return;
       // Rule: 数字 id 会在重启后复用，只接受同一次事件的关联记录。
       if (
@@ -550,9 +597,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     if (lifecycle !== "active") return;
     const generation = lifecycleVersion;
     try {
-      const response = await fetchImpl("./api/health");
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const service = (await response.json()) as ServiceStatus;
+      const service = await readJson<ServiceStatus>("./api/health");
       if (generation !== lifecycleVersion) return;
       state.service = service;
     } catch (error) {
@@ -566,22 +611,36 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
 
   function connect(): void {
     if (lifecycle !== "active") return;
+    clearTimeout(streamTimer);
     stream?.close();
     state.connection = "connecting";
-    state.streamReady = false;
     const openStream =
       options.openStream ??
       ((url: string) => new EventSource(url) as unknown as StreamLike);
-    const current = openStream("./api/stream");
+    const query = streamQuery();
+    const current = openStream(`./api/stream${query ? `?${query}` : ""}`);
     stream = current;
+    const watch = (): void => {
+      clearTimeout(streamTimer);
+      // Rule: 服务端每 15 秒发送目录心跳；三个周期无事件则主动重建静默连接。
+      streamTimer = setTimeout(() => {
+        if (lifecycle !== "active" || stream !== current) return;
+        notice("电脑实时连接超时，正在重新连接", true);
+        connect();
+      }, 45000);
+    };
+    watch();
     const listen = (type: string, listener: (event: Event) => void): void => {
       current.addEventListener(type, (event) => {
-        if (lifecycle === "active" && stream === current) listener(event);
+        if (lifecycle !== "active" || stream !== current) return;
+        if (type !== "error" && type !== "open") {
+          state.lastStreamAt = Date.now();
+          state.connection = "open";
+          watch();
+        }
+        listener(event);
       });
     };
-    listen("open", () => {
-      state.connection = "open";
-    });
     listen("error", () => {
       state.connection = "connecting";
     });
@@ -598,12 +657,13 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     });
     listen("logs", (event) => {
       try {
-        handleLogs(
-          JSON.parse((event as MessageEvent<string>).data) as {
-            logs: StoredLog[];
-            clients: LogClient[];
-          },
-        );
+        const batch = JSON.parse((event as MessageEvent<string>).data) as {
+          logs: StoredLog[];
+          clients: LogClient[];
+        } & Partial<ClientUpdate>;
+        handleLogs(batch);
+        if (batch.expiresBefore !== undefined && batch.evictedThroughId !== undefined)
+          handleClients(batch as ClientUpdate);
       } catch {
         notice("实时数据格式异常，请重新读取", true);
       }
@@ -627,8 +687,11 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     previous?.close();
     pageController?.abort();
     pageController = undefined;
+    for (const controller of reads) controller.abort();
     state.loading = false;
     state.connection = "offline";
+    state.streamReady = false;
+    clearTimeout(streamTimer);
     clearTimeout(noticeTimer);
   }
 

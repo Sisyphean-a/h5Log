@@ -59,6 +59,7 @@ async function bodySnapshot(
  * 此底层入口供需要指定 fetch 宿主的调用方使用，返回卸载函数，只恢复本次包装。
  * 文本/JSON 响应克隆后有限读取，不等待正文采集才返回；流和二进制正文不读取。
  * Request 自带正文不克隆；需要记录普通请求体时通过 init.body 传入文本或 JSON 字符串。
+ * FormData、URLSearchParams 按快照预算逐项记录为有序条目，不改动原请求正文。
  */
 export function attachFetchLogger(
   logger: Logger,
@@ -116,15 +117,8 @@ export function attachFetchLogger(
             size: source.size,
             data: "[Blob 正文未采集]",
           };
-        else if (source instanceof URLSearchParams) body = source.toString();
-        else if (source instanceof FormData)
-          body = Array.from(source, ([name, item]) => ({
-            name,
-            value:
-              typeof item === "string"
-                ? item
-                : { file: item.name, type: item.type, size: item.size },
-          }));
+        else if (source instanceof URLSearchParams || source instanceof FormData)
+          body = snapshot(source);
         else if (source instanceof ArrayBuffer || ArrayBuffer.isView(source))
           body = `[二进制正文 ${source.byteLength} 字节未采集]`;
         else if (source !== null && source !== undefined)

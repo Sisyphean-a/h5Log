@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import axios, { AxiosError, AxiosHeaders } from "axios";
-import type { AxiosAdapter, AxiosResponse } from "axios";
+import type { AxiosAdapter, AxiosResponse, InternalAxiosRequestConfig } from "axios";
 import { attachAxiosLogger } from "../src/axios.js";
 import { snapshot } from "../src/serialize.js";
 import type { Logger } from "../src/types.js";
@@ -32,6 +32,75 @@ function recorder() {
 }
 
 describe("Axios adapter 接入", () => {
+  it.each([false, true])("禁用时直接透传，不读取诊断数据或解析正文（失败=%s）", async (fail) => {
+    const body = '{"message":"disabled-body"}';
+    const failure = new Error("original failure");
+    const response = { data: body, status: 200, statusText: "OK", headers: {} } as AxiosResponse;
+    const adapter = vi.fn(async () => {
+      if (fail) throw failure;
+      return response;
+    });
+    const client = axios.create({ adapter });
+    const { logger, events } = recorder();
+    logger.getStatus = () => ({ enabled: false, queued: 0, dropped: 0, lastError: null });
+    const uri = vi.spyOn(client, "getUri");
+    const headers = new AxiosHeaders();
+    const headerRead = vi.spyOn(headers, "toJSON");
+    const parse = vi.spyOn(JSON, "parse");
+    const detach = attachAxiosLogger(client, logger);
+    try {
+      const config = { method: "post", url: "/raw", headers, data: body } as InternalAxiosRequestConfig;
+      const result = axios.getAdapter(client.defaults.adapter)(config);
+      if (fail) await expect(result).rejects.toBe(failure);
+      else expect(await result).toBe(response);
+      expect(adapter).toHaveBeenCalledExactlyOnceWith(config);
+      expect(uri).not.toHaveBeenCalled();
+      expect(headerRead).not.toHaveBeenCalled();
+      expect(parse).not.toHaveBeenCalledWith(body);
+      expect(events).toHaveLength(0);
+    } finally {
+      detach();
+      uri.mockRestore();
+      headerRead.mockRestore();
+      parse.mockRestore();
+    }
+  });
+
+  it("请求发出后停用采集，不再预处理响应正文", async () => {
+    const body = '{"message":"response-after-stop"}';
+    let enabled = true;
+    const client = axios.create({ adapter: async (config) => {
+      enabled = false;
+      return { config, status: 200, statusText: "OK", headers: {}, data: body };
+    } });
+    const { logger, events } = recorder();
+    logger.getStatus = () => ({ enabled, queued: 0, dropped: 0, lastError: null });
+    const detach = attachAxiosLogger(client, logger);
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      const result = await axios.getAdapter(client.defaults.adapter)({ method: "get", url: "/raw", headers: new AxiosHeaders() });
+      expect(result.data).toBe(body);
+      expect(parse).not.toHaveBeenCalledWith(body);
+      expect(events).toHaveLength(1);
+    } finally {
+      detach();
+      parse.mockRestore();
+    }
+  });
+
+  it("状态读取失败也直接保留原业务结果", async () => {
+    const response = { status: 200, data: "original" } as AxiosResponse;
+    const client = axios.create({ adapter: async () => response });
+    const { logger, events } = recorder();
+    logger.getStatus = () => { throw new Error("status failed"); };
+    const detach = attachAxiosLogger(client, logger);
+    try {
+      expect(await axios.getAdapter(client.defaults.adapter)({ headers: new AxiosHeaders() })).toBe(response);
+      expect(events).toHaveLength(0);
+    } finally {
+      detach();
+    }
+  });
   it("记录合并后的请求和解包前原始响应，业务仍得到原结果", async () => {
     const adapter: AxiosAdapter = async (config) => ({
       status: 200,

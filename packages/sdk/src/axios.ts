@@ -22,6 +22,7 @@ function readableBody(value: unknown): unknown {
  * 为已有 Axios 1.7+ 实例挂载接口采集，无需修改各处业务请求。
  * 在请求转换后、响应转换及业务解包前记录参数、正文与耗时，以 requestId 关联收发。
  * 上传由 SDK 独立完成，保持原业务响应和错误，采集失败不改变请求结果。
+ * 未启用、已停止或状态读取失败时直接透传；响应预处理前再次检查状态。
  *
  * 每个 Axios 实例挂载一次；重复挂载会替换上次安装。
  * 仅包装默认 adapter；单次请求自定义 adapter 不采集，更换默认 adapter 后需重新挂载。
@@ -41,14 +42,23 @@ export function attachAxiosLogger(
     globalThis.crypto?.randomUUID?.() ??
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let sequence = 0;
+  function enabled(): boolean {
+    try {
+      return logger.getStatus().enabled;
+    } catch {
+      // Rule: 诊断状态异常时只透传业务请求，不预处理采集数据。
+      return false;
+    }
+  }
   function record(level: "info" | "error", data: () => unknown): void {
     try {
-      logger.record("http", level, data());
+      if (enabled()) logger.record("http", level, data());
     } catch {
       /* Rule: 诊断失败不能改变请求结果。 */
     }
   }
   const wrapped: AxiosAdapter = async (config: InternalAxiosRequestConfig) => {
+    if (!enabled()) return getAdapter(original)(config);
     const requestId = `${logger.context.sessionId}:http:${attachmentId}:${++sequence}`;
     const started = Date.now();
     let url = config.url ?? "";

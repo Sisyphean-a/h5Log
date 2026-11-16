@@ -2,6 +2,9 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
+import { promisify } from "node:util";
+import { constants, createGzip, gzip, gunzip, type Gzip } from "node:zlib";
+import { createLogMatcher } from "../log-filter.js";
 import { CONTEXT_LIMITS, MAX_BATCH_EVENTS, MAX_EVENT_BYTES } from "@h5-log/sdk";
 import type { LogEvent } from "@h5-log/sdk";
 import { LogStore } from "./store.js";
@@ -9,6 +12,17 @@ import type { LogFilter } from "./store.js";
 export { LogStore } from "./store.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const compress = promisify(gzip);
+const decompress = promisify(gunzip);
+
+function acceptsGzip(request: IncomingMessage): boolean {
+  const accepted = new Map((request.headers["accept-encoding"] ?? "").split(",").map((entry) => {
+    const [name, ...params] = entry.trim().toLowerCase().split(";");
+    const quality = params.find((param) => param.trim().startsWith("q="));
+    return [name, quality ? Number(quality.trim().slice(2)) : 1] as const;
+  }));
+  return (accepted.get("gzip") ?? accepted.get("*") ?? 0) > 0;
+}
 const levels = new Set(["debug", "info", "log", "warn", "error"]);
 const sources = new Set(["console", "error", "http", "custom"]);
 
@@ -27,12 +41,19 @@ export interface ServerOptions {
   allowedOrigins?: string[];
 }
 
-function json(response: ServerResponse, status: number, value: unknown): void {
+async function json(request: IncomingMessage, response: ServerResponse, status: number, value: unknown): Promise<void> {
+  let body = Buffer.from(JSON.stringify(value));
+  response.appendHeader("Vary", "Accept-Encoding");
+  if (body.length >= 1024 && acceptsGzip(request)) {
+    body = await compress(body, { level: constants.Z_BEST_SPEED });
+    response.setHeader("Content-Encoding", "gzip");
+  }
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "Content-Length": body.length,
   });
-  response.end(JSON.stringify(value));
+  response.end(body);
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -46,6 +67,9 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     request.resume();
     throw new HttpError(413, "请求超过 1 MiB");
   }
+  const encoding = request.headers["content-encoding"]?.trim().toLowerCase();
+  if (encoding && encoding !== "identity" && encoding !== "gzip")
+    throw new HttpError(415, "仅支持 identity 或 gzip 编码");
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
@@ -53,8 +77,19 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     if (bytes > MAX_BODY_BYTES) throw new HttpError(413, "请求超过 1 MiB");
     chunks.push(chunk as Buffer);
   }
+  let body = Buffer.concat(chunks);
+  if (encoding === "gzip") {
+    try {
+      // Rule: 解压后的上限与原始请求相同，压缩不能绕过资源限制。
+      body = await decompress(body, { maxOutputLength: MAX_BODY_BYTES });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE")
+        throw new HttpError(413, "解压后请求超过 1 MiB");
+      throw new HttpError(400, "gzip 数据无效");
+    }
+  }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return JSON.parse(body.toString("utf8")) as unknown;
   } catch {
     throw new HttpError(400, "JSON 格式错误");
   }
@@ -142,7 +177,10 @@ function parseFilter(params: URLSearchParams): LogFilter {
 
 export function createLogServer(options: ServerOptions = {}) {
   const store = options.store ?? new LogStore();
-  const subscribers = new Set<ServerResponse>();
+  const subscribers = new Map<ServerResponse, {
+    matcher: ReturnType<typeof createLogMatcher>;
+    compressor: Gzip | undefined;
+  }>();
   const startedAt = Date.now();
   const maxSubscribers = 50;
   const allowedOrigins = options.allowedOrigins ?? ["*"];
@@ -156,15 +194,16 @@ export function createLogServer(options: ServerOptions = {}) {
       return;
     }
     // Rule: 慢查看者断开后重新读取保留日志，不让其发送缓冲无限增长。
-    if (response.writableLength > 1024 * 1024) {
+    const compressor = subscribers.get(response)?.compressor;
+    if (response.writableLength + (compressor?.writableLength ?? 0) + (compressor?.readableLength ?? 0) > 1024 * 1024) {
       response.destroy();
       subscribers.delete(response);
       return;
     }
-    response.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+    (compressor ?? response).write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
   };
   const broadcast = (name: string, data: unknown): void => {
-    for (const subscriber of subscribers) sendEvent(subscriber, name, data);
+    for (const subscriber of subscribers.keys()) sendEvent(subscriber, name, data);
   };
 
   const server = createServer((request, response) => {
@@ -187,7 +226,7 @@ export function createLogServer(options: ServerOptions = {}) {
       if (request.method === "OPTIONS") {
         response.writeHead(204, {
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Allow-Headers": "Content-Type, Content-Encoding",
           "Access-Control-Max-Age": "600",
         });
         response.end();
@@ -196,7 +235,7 @@ export function createLogServer(options: ServerOptions = {}) {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (url.pathname === "/api/health" && request.method === "GET") {
         const stats = store.stats();
-        json(response, 200, {
+        await json(request, response, 200, {
           status: "ok",
           ...stats,
           serverId: store.serverId,
@@ -216,29 +255,42 @@ export function createLogServer(options: ServerOptions = {}) {
       if (url.pathname === "/api/logs" && request.method === "POST") {
         const events = validateEvents(await readJson(request));
         const accepted = store.add(events);
-        if (accepted.length > 0)
-          broadcast("logs", { logs: accepted, clients: store.clients() });
-        broadcast("clients", {
+        const update = {
           clients: store.clients(),
           expiresBefore: store.expiryCutoff(),
           evictedThroughId: store.stats().evictedThroughId,
-        });
-        json(response, 202, { accepted: accepted.length });
+        };
+        for (const [subscriber, { matcher }] of subscribers) {
+          const logs = accepted.filter(matcher.inScope);
+          // Rule: 正文按设备范围分发；目录与清理水位只随该批发送一次。
+          sendEvent(subscriber, logs.length ? "logs" : "clients", logs.length ? { logs, ...update } : update);
+        }
+        await json(request, response, 202, { accepted: accepted.length });
         return;
       }
       if (url.pathname === "/api/logs" && request.method === "GET") {
-        json(response, 200, store.page(parseFilter(url.searchParams)));
+        await json(request, response, 200, store.page(parseFilter(url.searchParams)));
         return;
       }
       if (/^\/api\/logs\/\d+$/.test(url.pathname) && request.method === "GET") {
         const detail = store.detail(Number(url.pathname.split("/").at(-1)));
         if (!detail) throw new HttpError(404, "日志已过期或已被容量淘汰");
-        json(response, 200, detail);
+        await json(request, response, 200, detail);
         return;
       }
       if (url.pathname === "/api/stream" && request.method === "GET") {
         if (subscribers.size >= maxSubscribers)
           throw new HttpError(503, "查看连接已满，请稍后重试");
+        const matcher = createLogMatcher(parseFilter(url.searchParams));
+        const compressor = acceptsGzip(request)
+          ? createGzip({ level: constants.Z_BEST_SPEED, flush: constants.Z_SYNC_FLUSH })
+          : undefined;
+        response.appendHeader("Vary", "Accept-Encoding");
+        if (compressor) {
+          response.setHeader("Content-Encoding", "gzip");
+          compressor.on("error", () => response.destroy());
+          compressor.pipe(response);
+        }
         response.writeHead(200, {
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
@@ -246,12 +298,15 @@ export function createLogServer(options: ServerOptions = {}) {
           "X-Accel-Buffering": "no",
         });
         response.flushHeaders();
-        subscribers.add(response);
+        subscribers.set(response, { matcher, compressor });
         sendEvent(response, "hello", {
           serverId: store.serverId,
           clients: store.clients(),
         });
-        response.on("close", () => subscribers.delete(response));
+        response.on("close", () => {
+          subscribers.delete(response);
+          compressor?.destroy();
+        });
         return;
       }
       if (url.pathname.startsWith("/api/"))
@@ -299,16 +354,16 @@ export function createLogServer(options: ServerOptions = {}) {
         "Cache-Control": "no-cache",
       });
       response.end(request.method === "HEAD" ? undefined : file);
-    })().catch((error: unknown) => {
+    })().catch(async (error: unknown) => {
       if (response.headersSent || response.destroyed) {
         response.destroy();
         return;
       }
       if (error instanceof HttpError)
-        json(response, error.status, { error: error.message });
+        await json(request, response, error.status, { error: error.message });
       else {
         console.error("[h5-log]", error);
-        json(response, 500, { error: "服务器处理失败" });
+        await json(request, response, 500, { error: "服务器处理失败" });
       }
     });
   });
@@ -320,12 +375,14 @@ export function createLogServer(options: ServerOptions = {}) {
       expiresBefore: store.expiryCutoff(),
       evictedThroughId: store.stats().evictedThroughId,
     });
-    for (const subscriber of subscribers) subscriber.write(": heartbeat\n\n");
   }, 15000);
   cleanup.unref();
   const closeStreams = (): void => {
     clearInterval(cleanup);
-    for (const subscriber of subscribers) subscriber.end();
+    for (const [subscriber, { compressor }] of subscribers) {
+      if (compressor) compressor.end();
+      else subscriber.end();
+    }
     subscribers.clear();
   };
   server.once("close", closeStreams);

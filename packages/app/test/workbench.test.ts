@@ -98,9 +98,94 @@ afterEach(() => {
   workbench = undefined;
   history = undefined;
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("工作台状态", () => {
+  it("静默连接超过三个心跳周期后重建，hello 补读且忽略旧流", async () => {
+    vi.useFakeTimers();
+    const streams: Stream[] = [];
+    const fetchImpl = vi.fn().mockResolvedValue(response(page([log(2)], 2)));
+    workbench = createWorkbench({
+      fetchImpl,
+      openStream: () => { const stream = new Stream(); streams.push(stream); return stream; },
+    });
+    workbench.connect();
+    streams[0]!.emit("hello", { serverId: "server-a", clients: [client] });
+    await vi.advanceTimersByTimeAsync(44999);
+    expect(streams).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(streams[0]!.close).toHaveBeenCalledOnce();
+    expect(streams).toHaveLength(2);
+    expect(workbench.state.connection).toBe("connecting");
+    streams[1]!.emit("hello", { serverId: "server-a", clients: [client] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workbench.state.connection).toBe("open");
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([2]);
+    streams[0]!.emit("logs", { logs: [log(99)], clients: [client] });
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([2]);
+    workbench.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("补读请求或响应正文挂起会超时，失败仍保留期间的实时增量", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValueOnce({ ok: true, json: () => new Promise(() => {}) })
+      .mockResolvedValue(response(page([log(3)], 3)));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(1)];
+    const first = workbench.load();
+    workbench.handleLogs({ logs: [log(2)], clients: [client] });
+    await vi.advanceTimersByTimeAsync(10000);
+    await first;
+    expect(workbench.state.loading).toBe(false);
+    expect(workbench.state.error).toContain("超时");
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1, 2]);
+    const second = workbench.load();
+    await vi.advanceTimersByTimeAsync(10000);
+    await second;
+    expect(workbench.state.loading).toBe(false);
+    await workbench.load();
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([3]);
+  });
+
+  it("无新日志但目录心跳持续时不重连，暂存后停止检测", async () => {
+    vi.useFakeTimers();
+    const stream = new Stream();
+    const openStream = vi.fn(() => stream);
+    workbench = createWorkbench({ openStream });
+    workbench.connect();
+    stream.emit("hello", { serverId: "server-a", clients: [client] });
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(15000);
+      stream.emit("clients", { clients: [client], expiresBefore: 0, evictedThroughId: 0 });
+    }
+    expect(openStream).toHaveBeenCalledOnce();
+    workbench.suspend();
+    await vi.advanceTimersByTimeAsync(90000);
+    expect(openStream).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("实时订阅跟随设备范围，但不按关键词级别或会话截断本地历史", async () => {
+    const streams: Stream[] = [];
+    const openStream = vi.fn((_url: string) => {
+      const stream = new Stream(); streams.push(stream); return stream;
+    });
+    workbench = createWorkbench({ openStream, fetchImpl: vi.fn().mockResolvedValue(response(page([], 0))) });
+    workbench.connect();
+    workbench.setScope({ clientKey: "client-a", appId: "26", environment: "test" });
+    const url = new URL(openStream.mock.calls.at(-1)![0], "http://localhost");
+    expect(url.searchParams.get("clientKey")).toBe("client-a");
+    expect(url.searchParams.get("appId")).toBe("26");
+    expect(url.searchParams.get("environment")).toBe("test");
+    expect(streams[0]!.close).toHaveBeenCalledOnce();
+    const count = openStream.mock.calls.length;
+    workbench.setFilter({ search: "hello", level: "error", sessionId: "session-a" });
+    expect(openStream).toHaveBeenCalledTimes(count);
+  });
   it("子路径下列表、详情、状态和实时流都使用同一前缀", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) =>
       response(String(url).includes("logs/1") ? { log: log(1), related: [] } : page([log(1)], 1)),

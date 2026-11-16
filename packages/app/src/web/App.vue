@@ -374,6 +374,14 @@ function onPageHide(event: PageTransitionEvent): void {
   if (event.persisted) workbench.suspend();
 }
 
+function onOnline(): void {
+  workbench.connect();
+}
+
+function onVisibility(): void {
+  if (document.visibilityState === "visible") workbench.connect();
+}
+
 onMounted(() => {
   updateBodyWidth();
   void restoreDetailWidth();
@@ -383,6 +391,8 @@ onMounted(() => {
   document.addEventListener("keydown", onKeydown);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("online", onOnline);
+  document.addEventListener("visibilitychange", onVisibility);
 });
 onBeforeUnmount(() => {
   layoutDisposed = true;
@@ -391,6 +401,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onKeydown);
   window.removeEventListener("pageshow", onPageShow);
   window.removeEventListener("pagehide", onPageHide);
+  window.removeEventListener("online", onOnline);
+  document.removeEventListener("visibilitychange", onVisibility);
   clearTimeout(searchTimer);
   clearTimeout(toastTimer);
   workbench.dispose();
@@ -619,7 +631,13 @@ onBeforeUnmount(() => {
 
       <div v-if="toast" class="toast">{{ toast }}</div>
 
-      <StatusDialog v-model:show="statusOpen" :service="state.service" />
+      <StatusDialog
+        v-model:show="statusOpen"
+        :service="state.service"
+        :connection="connectionText"
+        :last-stream-at="state.lastStreamAt"
+        :client="currentClient"
+      />
     </div>
   </NConfigProvider>
 </template>

@@ -110,6 +110,9 @@ it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务�
     expect(service.attributes("title")).toContain("连接中");
     Stream.instances.at(-1)!.dispatchEvent(new Event("open"));
     await flushPromises();
+    expect(service.attributes("data-state")).toBe("connecting");
+    Stream.instances.at(-1)!.emit("hello", { serverId: "server-a", clients: [client] });
+    await flushPromises();
     expect(service.attributes("data-state")).toBe("open");
     expect(service.attributes("title")).toContain("实时连接");
     expect(wrapper.text()).not.toMatch(/接入 SDK|复制列表|导出列表/);
@@ -119,6 +122,29 @@ it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务�
   } finally {
     wrapper.unmount();
   }
+});
+
+it("电脑重新联网或恢复前台时重建订阅，卸载后移除监听", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => pageBody([log(1, "当前记录")]) })));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
+    const current = Stream.instances.at(-1)!;
+    window.dispatchEvent(new Event("online"));
+    expect(current.close).toHaveBeenCalledOnce();
+    const resumed = Stream.instances.at(-1)!;
+    expect(resumed).not.toBe(current);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(resumed.close).toHaveBeenCalledOnce();
+  } finally {
+    wrapper.unmount();
+  }
+  const count = Stream.instances.length;
+  window.dispatchEvent(new Event("online"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(Stream.instances).toHaveLength(count);
 });
 
 it("工具栏精简后仍明确显示加载与读取失败状态", async () => {
@@ -317,7 +343,7 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   vi.stubGlobal("EventSource", Stream);
 
   const wrapper = mount(App, { attachTo: document.body });
-  const stream = Stream.instances.at(-1)!;
+  let stream = Stream.instances.at(-1)!;
   stream.emit("hello", { serverId: "server-a", clients: [client] });
 
   await vi.waitFor(() =>
@@ -330,6 +356,9 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("clientKey=client-a"))).toBe(true),
   );
 
+  stream = Stream.instances.at(-1)!;
+  stream.emit("hello", { serverId: "server-a", clients: [client] });
+  await flushPromises();
   const input = wrapper.find('input[placeholder*="搜索"]');
   await input.setValue("订单");
   await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
