@@ -185,7 +185,7 @@ onBeforeUnmount(() => {
         ]"
         @click="emit('select', log.id)"
       >
-        <span class="log-time">{{ formatTime(log.receivedAt) }}</span>
+        <span class="log-time" title="发生时间（设备时间）">{{ formatTime(log.timestamp) }}</span>
         <span
           class="log-source"
           :title="`${sourceLabels[log.source] ?? log.source} · ${levelLabels[log.level] ?? log.level}`"

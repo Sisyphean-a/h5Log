@@ -43,10 +43,12 @@ function copyJson(): void {
         <NButton size="tiny" quaternary @click="emit('close')">关闭</NButton>
       </div>
     </header>
-    <p class="detail-time">{{ formatDateTime(log.receivedAt) }}</p>
+    <p class="detail-time" title="SDK 采集日志时的设备时间">发生时间 {{ formatDateTime(log.timestamp) }}</p>
 
     <div class="detail-body">
       <dl class="meta">
+        <dt>接收时间</dt>
+        <dd>{{ formatDateTime(log.receivedAt) }}</dd>
         <dt>应用</dt>
         <dd>{{ log.appId }} / {{ log.environment }}</dd>
         <dt>设备</dt>

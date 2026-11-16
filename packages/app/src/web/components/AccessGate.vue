@@ -97,7 +97,6 @@ onBeforeUnmount(() => clearTimeout(shakeTimer));
       role="dialog"
       aria-modal="true"
       aria-labelledby="access-title"
-      aria-describedby="access-hint"
       :aria-busy="checking || saving"
     >
       <div class="access-brand" aria-hidden="true">
@@ -105,7 +104,6 @@ onBeforeUnmount(() => clearTimeout(shakeTimer));
         <span class="access-brand-name">LOG</span>
       </div>
       <h1 id="access-title" class="access-title">输入访问密钥</h1>
-      <p id="access-hint" class="access-hint">{{ ACCESS_KEY_LENGTH }} 位数字或字母，验证后即可查看日志。</p>
 
       <form class="access-form" @submit.prevent="submit">
         <label class="access-label" for="access-key">访问密钥</label>
@@ -141,15 +139,6 @@ onBeforeUnmount(() => clearTimeout(shakeTimer));
       <p v-else-if="notice" class="access-message access-notice" role="status">{{ notice }}</p>
       <p v-else-if="checking" class="access-message access-notice" role="status">
         正在检查登录状态…
-      </p>
-      <p v-else class="access-message" aria-hidden="true">&nbsp;</p>
-
-      <p class="access-foot">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="5" y="10" width="14" height="10" rx="2" />
-          <path d="M8 10V7a4 4 0 0 1 8 0v3" />
-        </svg>
-        密钥仅保存在本机浏览器；清除站点数据后需重新输入。
       </p>
     </section>
   </div>

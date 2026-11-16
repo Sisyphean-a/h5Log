@@ -602,7 +602,7 @@ onBeforeUnmount(() => {
         <div ref="bodyEl" class="body" :class="{ 'is-resizing': resizing }" :style="{ '--detail-width': `${detailWidth}px`, '--resizer-width': `${RESIZER_WIDTH}px` }">
           <main ref="listEl" class="workspace">
             <div v-if="visibleLogs.length > 0" class="list-head">
-              <span>时间</span><span>来源</span><span>内容</span>
+              <span title="日志发生时间（设备时间）">发生时间</span><span>来源</span><span>内容</span>
             </div>
             <div v-if="visibleLogs.length === 0" class="empty">
               <p class="empty-title">
