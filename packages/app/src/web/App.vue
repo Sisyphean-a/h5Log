@@ -153,7 +153,9 @@ const connectionText = computed(() =>
 // Rule: 关键词在本地也立即过滤一次，不必等服务端往返；服务端同样按关键词收窄窗口。
 const visibleLogs = computed(() => state.logs.filter((log) => workbench.matches(log)));
 const viewCleared = computed(() => state.clearAfter > 0 && !state.loading);
-const canOlder = computed(() => !state.loading && state.logs.length > 0);
+const canOlder = computed(() =>
+  !state.loading && state.logs.length > 0 && (state.serverHasMore || state.localHasMore),
+);
 const hasStaleScope = computed(
   () => !!state.filter.clientKey && !currentClient.value,
 );
@@ -250,17 +252,6 @@ watch(
     if (message) showToast(message);
   },
 );
-
-async function loadOlder(): Promise<void> {
-  await workbench.loadOlder();
-}
-
-function onScroll(): void {
-  const el = listEl.value;
-  if (!el || state.loading || el.scrollTop > 4) return;
-  if (state.logs.length === 0) return;
-  void loadOlder();
-}
 
 async function openDetail(id: number): Promise<void> {
   await workbench.openDetail(id);
@@ -440,7 +431,13 @@ onBeforeUnmount(() => {
               <i class="toggle-dot" />跟随
             </button>
             <div class="action-row">
-              <NButton size="small" quaternary :disabled="!canOlder" @click="loadOlder">
+              <NButton
+                size="small"
+                quaternary
+                :disabled="!canOlder"
+                title="手动查看更早一页，点击“最新”返回实时日志"
+                @click="workbench.loadOlder()"
+              >
                 更早
               </NButton>
               <NButton size="small" quaternary @click="workbench.latest()">最新</NButton>
@@ -496,7 +493,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="body">
-          <main ref="listEl" class="workspace" @scroll="onScroll">
+          <main ref="listEl" class="workspace">
             <div v-if="visibleLogs.length > 0" class="list-head">
               <span>时间</span><span>来源</span><span>内容</span>
             </div>
@@ -507,7 +504,7 @@ onBeforeUnmount(() => {
                     ? "正在读取日志…"
                     : viewCleared
                       ? "视图已清空"
-                      : "当前范围没有日志"
+                      : state.total > 0 ? "当前页没有日志" : "当前范围没有日志"
                 }}
               </p>
               <p v-if="!state.loading" class="hint">
@@ -520,6 +517,10 @@ onBeforeUnmount(() => {
                   >
                     恢复视图
                   </button>
+                </template>
+                <template v-else-if="state.total > 0">
+                  最新日志仍可查看。
+                  <button type="button" class="empty-action" @click="workbench.latest()">查看最新日志</button>
                 </template>
                 <template v-else>
                   在手机上操作，或打开

@@ -97,6 +97,7 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   await vi.waitFor(() =>
     expect(wrapper.findAll(".log-row")).toHaveLength(2),
   );
+  expect(wrapper.find(".action-row button").attributes("disabled")).toBeDefined();
   // 单设备聚焦：客户端选择器展示选中的设备，而不是“全部客户端”
   expect(wrapper.find(".client-select").text()).toContain("测试手机");
   await vi.waitFor(() =>
@@ -113,6 +114,47 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   expect(wrapper.text()).not.toContain("无关日志");
 
   wrapper.unmount();
+});
+
+it("滚动到顶部不会偷偷翻页，更早只由按钮触发", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const before = new URL(String(input), "http://localhost").searchParams.has("before");
+    return { ok: true, json: async () => ({
+      ...pageBody(before ? [log(1, "更早记录")] : [log(2, "当前记录 A"), log(3, "当前记录 B")]),
+      total: 3,
+      hasMore: !before,
+    }) };
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2));
+    await flushPromises();
+    const calls = fetchMock.mock.calls.length;
+    await wrapper.find(".workspace").trigger("scroll");
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    expect(wrapper.findAll(".log-row")).toHaveLength(2);
+    await wrapper.find(".action-row button").trigger("click");
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
+    expect(wrapper.find(".log-text").text()).toBe("更早记录");
+    expect(wrapper.find(".action-row button").attributes("disabled")).toBeDefined();
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("空历史页不冒充整个范围无日志，并提供查看最新的入口", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ ...pageBody([]), total: 3 }) })));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.find(".empty-title").text()).toBe("当前页没有日志"));
+    expect(wrapper.find(".empty-action").text()).toBe("查看最新日志");
+  } finally {
+    wrapper.unmount();
+  }
 });
 
 it("来源支持多选且没有自定义入口，清空后恢复全部来源", async () => {

@@ -268,6 +268,75 @@ describe("工作台状态", () => {
     expect(workbench.state.logs.map((item) => item.id)).toEqual([10, 11]);
   });
 
+  it("本地历史页不受服务端容量水位和过期窗口清空", async () => {
+    const now = Date.now();
+    history = createLocalHistory()!;
+    history.setServerId("server-a");
+    await history.clear();
+    history.append([1, 2].map((id) => ({ ...log(id), receivedAt: now - 13 * 3600000 })));
+    const current = [20, 21].map((id) => ({ ...log(id), receivedAt: now }));
+    const fetchImpl = vi.fn().mockResolvedValue(response(page(current, 21)));
+    workbench = createWorkbench({ fetchImpl, history });
+    await workbench.load();
+    workbench.handleClients({ clients: [client], expiresBefore: 0, evictedThroughId: 10 });
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    await workbench.loadOlder();
+    expect(workbench.state.localMode).toBe(true);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1, 2]);
+    workbench.state.selectedId = 1;
+    const requests = fetchImpl.mock.calls.length;
+
+    workbench.handleClients({ clients: [client], expiresBefore: now - 12 * 3600000, evictedThroughId: 10 });
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1, 2]);
+    expect(workbench.state.localMode).toBe(true);
+    expect(workbench.state.selectedId).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(requests);
+  });
+
+  it("更早的服务端页为空时保留当前页，并补上加载期间的新日志", async () => {
+    let finish!: (value: Response) => void;
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response(page([log(10)], 10, { hasMore: true })))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockResolvedValue(response(page([log(10), log(11)], 11)));
+    workbench = createWorkbench({ fetchImpl, openStream: () => new Stream() });
+    await workbench.load();
+    const older = workbench.loadOlder();
+    workbench.handleLogs({ logs: [log(11)], clients: [client] });
+    finish(response(page([], 11, { total: 2 })));
+    await older;
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([10, 11]);
+    expect(workbench.state.total).toBe(2);
+    expect(workbench.state.serverHasMore).toBe(false);
+    workbench.suspend();
+    workbench.resume();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3));
+    expect(new URL(String(fetchImpl.mock.calls[2]![0]), "http://localhost").searchParams.has("before")).toBe(false);
+  });
+
+  it("读更早时遇到服务重启，不保留旧实例记录或旧分页游标", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response(page([log(10)], 10, { hasMore: true })))
+      .mockResolvedValue(response(page([], 0, { serverId: "server-b" })));
+    workbench = createWorkbench({ fetchImpl });
+    await workbench.load();
+    await workbench.loadOlder();
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(workbench.state.serverId).toBe("server-b");
+    expect(workbench.state.logs).toHaveLength(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(new URL(String(fetchImpl.mock.calls[2]![0]), "http://localhost").searchParams.has("before")).toBe(false);
+  });
+
+  it("实时窗口裁掉旧行后，仍可通过更早读取它们", async () => {
+    workbench = createWorkbench({ fetchImpl: vi.fn().mockResolvedValue(response(page([log(1)], 1))) });
+    await workbench.load();
+    expect(workbench.state.serverHasMore).toBe(false);
+    workbench.handleLogs({ logs: Array.from({ length: 200 }, (_, index) => log(index + 2)), clients: [client] });
+    expect(workbench.state.logs).toHaveLength(200);
+    expect(workbench.state.serverHasMore).toBe(true);
+  });
+
   it("容量淘汰通知清理行与会话，并让详情关闭", async () => {
     const workbench = createWorkbench({
       fetchImpl: vi

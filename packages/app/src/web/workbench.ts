@@ -156,6 +156,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
 
   async function load(before?: number): Promise<void> {
     if (lifecycle !== "active") return;
+    const previousBefore = historyBefore;
+    const previousCursor = state.cursor;
     const version = ++requestVersion;
     pageController?.abort();
     const controller = new AbortController();
@@ -181,24 +183,28 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       if (version !== requestVersion || lifecycle !== "active") return;
       if (state.serverId && state.serverId !== page.serverId) {
         resetForRestart(page.serverId);
-        void load(before);
+        void load();
         return;
       }
       state.serverId = page.serverId;
       history?.setServerId(page.serverId);
       history?.append(page.logs);
-      state.serverHasMore = page.hasMore;
+      const emptyEarlier = before !== undefined && page.logs.length === 0;
+      if (emptyEarlier) historyBefore = previousBefore;
       state.localMode = false;
+      state.localHasMore = false;
       state.clients = page.clients ?? [];
       state.sessions = page.sessions ?? [];
       state.cursor = Math.max(page.cursor, pendingCursor);
       const incoming = pending.filter(
         (log) =>
-          log.id > page.cursor && log.id > state.evictedThroughId && matches(log),
+          log.id > (emptyEarlier ? previousCursor : page.cursor) &&
+          log.id > state.evictedThroughId && matches(log),
       );
+      // Rule: 空历史快照不含缓冲行，保留实时页时不能按快照游标丢掉这些行。
       const merged = [
-        ...page.logs.filter((log) => log.id > state.evictedThroughId),
-        ...(before === undefined ? incoming : []),
+        ...(emptyEarlier ? state.logs : page.logs).filter((log) => log.id > state.evictedThroughId),
+        ...(historyBefore === undefined ? incoming : []),
       ];
       state.logs = merged.slice(-200);
       state.total =
@@ -221,13 +227,15 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       pendingMatchIds = new Set();
       pendingOverflow = false;
       state.loading = false;
-      state.serverHasMore = page.hasMore;
-      if (!page.hasMore) void probeLocalHistory();
-      notice("");
-      if (refreshPage && (pendingInvalidated || before === undefined))
-        void load(before);
+      state.serverHasMore = page.hasMore || merged.length > 200;
+      if (!state.serverHasMore) void probeLocalHistory();
+      notice(emptyEarlier
+        ? "没有更早的服务端日志，已保留当前页"
+        : before !== undefined ? "正在查看更早日志，点击“最新”返回实时" : "");
+      if (refreshPage && (pendingInvalidated || historyBefore === undefined))
+        void load(historyBefore);
       else if (refreshSessions) void refreshSessionsIndex();
-      else if (overflowed && before !== undefined) void load(before);
+      else if (overflowed && historyBefore !== undefined) void load(historyBefore);
     } catch (error) {
       if (version !== requestVersion || lifecycle !== "active") return;
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -243,7 +251,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const version = requestVersion;
     const has = await history.hasBefore(oldest.id, matches);
     if (version !== requestVersion || state.loading || lifecycle !== "active") return;
-    if (has) state.serverHasMore = false;
+    state.localHasMore = has;
   }
 
   async function loadOlder(): Promise<void> {
@@ -263,7 +271,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       if (version !== requestVersion || lifecycle !== "active") return;
       state.loading = false;
       if (result.logs.length === 0) {
-        notice("没有更早的本地历史：只保留当前浏览器看过的日志");
+        state.localHasMore = false;
+        notice("没有更早的本地历史，已保留当前页");
         return;
       }
       state.logs = result.logs;
@@ -271,7 +280,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       state.localHasMore = result.hasMore;
       historyBefore = before;
       state.serverHasMore = false;
-      notice("本地历史：来自当前浏览器，不在服务器保留窗口内");
+      notice("正在查看本地历史，点击“最新”返回实时日志");
     } catch (error) {
       if (version !== requestVersion) return;
       state.loading = false;
@@ -325,6 +334,12 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function resetForRestart(serverId: string): void {
+    state.logs = [];
+    state.detail = undefined;
+    state.total = 0;
+    state.serverHasMore = false;
+    state.localHasMore = false;
+    historyBefore = undefined;
     state.clearAfter = 0;
     state.cursor = 0;
     state.evictedThroughId = 0;
@@ -386,6 +401,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.total += fresh.length;
     const combined = [...state.logs, ...fresh];
     state.logs = combined.slice(-200);
+    if (combined.length > 200) state.serverHasMore = true;
     if (state.follow && state.selectedId === undefined) {
       // 视图层负责滚动到底部
     }
@@ -415,26 +431,29 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       state.evictedThroughId,
       update.evictedThroughId,
     );
-    const retained = state.logs.filter(
-      (log) =>
-        log.receivedAt > update.expiresBefore &&
-        log.id > state.evictedThroughId,
-    );
-    const changed = retained.length !== state.logs.length;
-    state.logs = retained;
+    // Rule: 服务端淘汰只约束实时窗口；本地存档由浏览器自身的缓存容量管理。
+    if (!state.localMode) {
+      state.logs = state.logs.filter(
+        (log) =>
+          log.receivedAt > update.expiresBefore &&
+          log.id > state.evictedThroughId,
+      );
+    }
     state.sessions = state.sessions.filter(
       (item) => item.lastSeen > update.expiresBefore,
     );
     if (
+      !state.localMode &&
       state.selectedId !== undefined &&
       state.selectedId <= state.evictedThroughId
     )
       state.selectedId = undefined;
-    void changed;
     if (cutoffChanged) {
       void refreshSessionsIndex();
-      if (!state.loading) void load(historyBefore);
-      else pendingInvalidated = true;
+      if (!state.localMode) {
+        if (!state.loading) void load(historyBefore);
+        else pendingInvalidated = true;
+      }
     }
   }
 
