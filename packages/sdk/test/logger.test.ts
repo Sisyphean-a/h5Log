@@ -38,6 +38,142 @@ function sent() {
   };
 }
 
+describe("SDK 本地诊断", () => {
+  it("区分采集、在途批次和定时器心跳，读取快照不产生 IO 或额外定时器", async () => {
+    vi.setSystemTime(10000);
+    let complete!: (response: { ok: boolean; status: number }) => void;
+    upload.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const client = start();
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const timers = vi.getTimerCount();
+    expect(client.getStatus()).toMatchObject({
+      recorded: 0, lastRecordedAt: null, lastTickAt: null,
+      inFlightCount: 0, lastAttemptAt: null, phase: "idle",
+      lastHttpStatus: null, lastFailure: null,
+    });
+    for (let i = 0; i < 10; i++) client.getStatus();
+    expect(vi.getTimerCount()).toBe(timers);
+    expect(writes).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+
+    client.record("custom", "info", "first");
+    expect(client.getStatus()).toMatchObject({ recorded: 1, lastRecordedAt: 10000, queued: 1 });
+    const sending = client.flush();
+    client.record("custom", "info", "next batch");
+    expect(client.getStatus()).toMatchObject({
+      recorded: 2, queued: 1, inFlightCount: 1,
+      lastAttemptAt: 10000, phase: "uploading", state: "sending",
+    });
+    expect(JSON.stringify(client.getStatus())).not.toContain("next batch");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(client.getStatus().lastTickAt).toBe(10500);
+    expect(upload).toHaveBeenCalledOnce();
+    complete({ ok: true, status: 202 });
+    await sending;
+    expect(client.getStatus()).toMatchObject({
+      queued: 1, inFlightCount: 0, phase: "idle", sent: 1,
+      lastHttpStatus: 202, lastSentAt: 10500,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(client.getStatus()).toMatchObject({ recorded: 2, sent: 2, lastTickAt: 11500 });
+    client.stop();
+    client.record("custom", "info", "ignored after stop");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(client.getStatus()).toMatchObject({ enabled: false, recorded: 2, lastTickAt: 11500 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("初始化和采集失败可区分，返回的失败快照不能修改 SDK 内部状态", () => {
+    const invalid = start({ endpoint: "" });
+    expect(invalid.getStatus()).toMatchObject({
+      enabled: false, recorded: 0, lastTickAt: null,
+      lastFailure: { stage: "initialization", httpStatus: null },
+    });
+    const client = start();
+    vi.spyOn(JSON, "stringify").mockImplementationOnce(() => { throw new Error("snapshot failed"); });
+    client.record("custom", "info", "not queued");
+    const status = client.getStatus();
+    expect(status).toMatchObject({
+      recorded: 0, lastRecordedAt: null, queued: 0, dropped: 1,
+      lastError: "snapshot failed",
+      lastFailure: { stage: "capture", message: "snapshot failed", httpStatus: null, at: Date.now() },
+    });
+    Object.assign(status.lastFailure!, { message: "changed by caller" });
+    expect(client.getStatus().lastFailure?.message).toBe("snapshot failed");
+    client.record("custom", "info", "queued");
+    expect(client.getStatus()).toMatchObject({ recorded: 1, queued: 1 });
+  });
+
+  it.each([400, 429, 503])("保留 HTTP %i 的失败详情，但不改变丢弃或退避策略", async (status) => {
+    upload.mockResolvedValueOnce({ ok: false, status });
+    const client = start();
+    client.record("custom", "info", "request");
+    await client.flush();
+    const failure = client.getStatus().lastFailure;
+    expect(client.getStatus()).toMatchObject({
+      phase: "idle", inFlightCount: 0, lastHttpStatus: status,
+      queued: status === 400 ? 0 : 1,
+      dropped: status === 400 ? 1 : 0,
+      state: status === 400 ? "idle" : "retrying",
+      lastFailure: { stage: "http", httpStatus: status, at: Date.now() },
+    });
+    if (status === 400) {
+      client.record("custom", "info", "next request");
+      await client.flush();
+    } else {
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(client.getStatus()).toMatchObject({
+      lastError: null, lastHttpStatus: 202, phase: "idle", sent: 1, lastFailure: failure,
+    });
+  });
+
+  it("网络挂起可见在途数量，超时与恢复后仍保留最近失败供诊断", async () => {
+    upload.mockImplementationOnce(() => new Promise(() => {}));
+    const client = start();
+    client.record("custom", "info", "pending");
+    const sending = client.flush();
+    expect(client.getStatus()).toMatchObject({ phase: "uploading", inFlightCount: 1, queued: 0 });
+    await vi.advanceTimersByTimeAsync(5000);
+    await sending;
+    expect(client.getStatus()).toMatchObject({
+      phase: "idle", inFlightCount: 0, queued: 1, lastHttpStatus: null,
+      lastFailure: { stage: "network", httpStatus: null, at: Date.now() },
+    });
+    expect(client.getStatus().lastFailure?.message).toContain("超时");
+    const failure = client.getStatus().lastFailure;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(client.getStatus()).toMatchObject({ sent: 1, lastError: null, lastFailure: failure });
+  });
+
+  it("压缩挂起和超时可定位，迟到的压缩结果不会污染下一批状态", async () => {
+    vi.stubGlobal("CompressionStream", NativeCompressionStream);
+    let complete!: (body: ArrayBuffer) => void;
+    vi.spyOn(Response.prototype, "arrayBuffer").mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const client = start();
+    client.record("custom", "info", "large payload".repeat(1000));
+    const sending = client.flush();
+    expect(client.getStatus()).toMatchObject({ phase: "compressing", inFlightCount: 1, queued: 0 });
+    expect(upload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(5000);
+    await sending;
+    expect(client.getStatus()).toMatchObject({
+      phase: "idle", inFlightCount: 0, queued: 1,
+      lastFailure: { stage: "compression", httpStatus: null },
+    });
+    vi.stubGlobal("CompressionStream", undefined);
+    upload.mockImplementationOnce(() => new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(client.getStatus()).toMatchObject({ phase: "uploading", inFlightCount: 1 });
+    complete(new ArrayBuffer(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus()).toMatchObject({ phase: "uploading", inFlightCount: 1 });
+    client.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus()).toMatchObject({ phase: "idle", inFlightCount: 0, state: "disabled" });
+  });
+});
+
 describe("SDK 采集和生命周期", () => {
   it("上传挂起后业务 200、失败及后续日志仍被记录，上传恢复后整批送达", async () => {
     upload.mockImplementationOnce(() => new Promise(() => {}));
@@ -207,7 +343,11 @@ describe("SDK 采集和生命周期", () => {
     await client.flush();
     expect(console.info).toBe(original);
     expect(upload).not.toHaveBeenCalled();
-    expect(client.getStatus().enabled).toBe(false);
+    expect(client.getStatus()).toMatchObject({
+      enabled: false, recorded: 0, lastRecordedAt: null, lastTickAt: null,
+      lastAttemptAt: null, inFlightCount: 0, phase: "idle", lastFailure: null,
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("保留 console 行为，记录调用时对象快照，停止后恢复", async () => {
@@ -295,6 +435,21 @@ describe("SDK 采集和生命周期", () => {
     expect(
       new TextEncoder().encode(upload.mock.calls[0]![1].body as string).length,
     ).toBeLessThan(128 * 1024);
+  });
+
+  it.each([undefined, Number.NaN, Number.POSITIVE_INFINITY])("默认或无效合批间隔 %s 使用 500ms，空队列不请求", async (flushIntervalMs) => {
+    const client = start({ flushIntervalMs });
+    const startedAt = Date.now();
+    client.record("custom", "info", "batched");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(upload).not.toHaveBeenCalled();
+    expect(client.getStatus().lastTickAt).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(upload).toHaveBeenCalledOnce();
+    expect(client.getStatus()).toMatchObject({ sent: 1, lastTickAt: startedAt + 500 });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(upload).toHaveBeenCalledOnce();
+    expect(client.getStatus().lastTickAt).toBe(startedAt + 2000);
   });
 
   it("按 flushIntervalMs 定时合批上传，越界值被夹到安全区间", async () => {
@@ -409,7 +564,7 @@ describe("SDK 采集和生命周期", () => {
   it("队列达到上限时淘汰旧记录，不无限占用内存", () => {
     const client = start();
     for (let i = 0; i < 1200; i++) client.record("custom", "info", i);
-    expect(client.getStatus()).toMatchObject({ queued: 1000, dropped: 200 });
+    expect(client.getStatus()).toMatchObject({ enabled: true, recorded: 1200, queued: 1000, dropped: 200 });
   });
 
   it("重复初始化不叠加 console 包装，同一客户端产生新页面会话", async () => {

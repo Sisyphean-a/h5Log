@@ -13,6 +13,8 @@ import type {
   LogEvent,
   Logger,
   LoggerOptions,
+  LoggerFailure,
+  LoggerStatus,
   LogLevel,
   LogSource,
 } from "./types.js";
@@ -20,10 +22,10 @@ export type * from "./types.js";
 
 const MAX_QUEUE_EVENTS = 1000;
 const MAX_QUEUE_BYTES = 4 * 1024 * 1024;
-const DEFAULT_FLUSH_INTERVAL_MS = 250;
+const DEFAULT_FLUSH_INTERVAL_MS = 500;
 const MIN_FLUSH_INTERVAL_MS = 50;
 
-/** Rule: 高频 console 与接口日志默认 250ms 合批；过小会放大请求数。 */
+/** Rule: 高频 console 与接口日志默认 500ms 合批；过小会放大请求数。 */
 function flushInterval(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value))
     return DEFAULT_FLUSH_INTERVAL_MS;
@@ -75,6 +77,11 @@ function deviceId(appId: string): string {
 export function createLogger(options: LoggerOptions): Logger {
   let active = options.enabled === true && typeof window !== "undefined";
   let lastError: string | null = null;
+  let lastFailure: LoggerFailure | null = null;
+  function setFailure(stage: LoggerFailure["stage"], message: string, httpStatus: number | null = null): void {
+    lastError = message;
+    lastFailure = { at: Date.now(), stage, message, httpStatus };
+  }
   let endpoint = "";
   const context: Readonly<LogContext> = Object.freeze({
     appId: options.appId,
@@ -112,7 +119,7 @@ export function createLogger(options: LoggerOptions): Logger {
       nativeFetch = globalThis.fetch.bind(globalThis);
     } catch (error) {
       active = false;
-      lastError = error instanceof Error ? error.message : "日志初始化失败";
+      setFailure("initialization", error instanceof Error ? error.message : "日志初始化失败");
     }
   }
 
@@ -122,6 +129,13 @@ export function createLogger(options: LoggerOptions): Logger {
   let dropped = 0;
   let sent = 0;
   let lastSentAt: number | null = null;
+  let recorded = 0;
+  let lastRecordedAt: number | null = null;
+  let lastTickAt: number | null = null;
+  let inFlightCount = 0;
+  let lastAttemptAt: number | null = null;
+  let phase: LoggerStatus["phase"] = "idle";
+  let lastHttpStatus: number | null = null;
   let failures = 0;
   let retryAt = 0;
   let inFlight: Promise<void> | undefined;
@@ -179,10 +193,12 @@ export function createLogger(options: LoggerOptions): Logger {
       }
       queue.push({ text, bytes });
       queueBytes += bytes;
+      recorded++;
+      lastRecordedAt = event.timestamp;
       trimQueue();
     } catch (error) {
       dropped++;
-      lastError = error instanceof Error ? error.message : "日志采集失败";
+      setFailure("capture", error instanceof Error ? error.message : "日志采集失败");
     }
   }
 
@@ -200,6 +216,10 @@ export function createLogger(options: LoggerOptions): Logger {
       bytes += next.bytes + 1;
     }
     const text = `{"events":[${batch.map((item) => item.text).join(",")}]}`;
+    lastAttemptAt = Date.now();
+    inFlightCount = batch.length;
+    let failureStage: LoggerFailure["stage"] = "network";
+    let httpStatus: number | null = null;
     controller = new AbortController();
     const requestController = controller;
     let onAbort!: () => void;
@@ -216,6 +236,8 @@ export function createLogger(options: LoggerOptions): Logger {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           // Rule: 小批次不压缩；宿主具备原生流式压缩能力时才异步处理大批次。
           if (bytes >= 8 * 1024 && typeof CompressionStream !== "undefined") {
+            phase = "compressing";
+            failureStage = "compression";
             const compressed = await new Response(
               new Response(text).body!.pipeThrough(new CompressionStream("gzip"), { signal: requestController.signal }),
             ).arrayBuffer();
@@ -226,6 +248,8 @@ export function createLogger(options: LoggerOptions): Logger {
           }
           if (!active || requestController.signal.aborted)
             throw requestController.signal.reason ?? new Error("日志采集已停止");
+          phase = "uploading";
+          failureStage = "network";
           return nativeFetch!(endpoint, {
             method: "POST", headers, body,
             signal: requestController.signal,
@@ -234,6 +258,9 @@ export function createLogger(options: LoggerOptions): Logger {
           });
         })();
         const response = await Promise.race([upload, cancelled]);
+        httpStatus = response.status;
+        lastHttpStatus = httpStatus;
+        failureStage = "http";
         if (!response.ok) {
           if (
             response.status >= 400 &&
@@ -241,7 +268,7 @@ export function createLogger(options: LoggerOptions): Logger {
             response.status !== 429
           ) {
             dropped += batch.length;
-            lastError = `日志上传被拒绝：HTTP ${response.status}`;
+            setFailure("http", `日志上传被拒绝：HTTP ${response.status}`, httpStatus);
             return;
           }
           throw new Error(`日志上传失败：HTTP ${response.status}`);
@@ -259,12 +286,14 @@ export function createLogger(options: LoggerOptions): Logger {
         failures++;
         retryAt =
           Date.now() + Math.min(30000, 1000 * 2 ** Math.min(failures - 1, 5));
-        lastError = error instanceof Error ? error.message : "日志服务不可用";
+        setFailure(failureStage, error instanceof Error ? error.message : "日志服务不可用", httpStatus);
       } finally {
         clearTimeout(timeout);
         requestController.signal.removeEventListener("abort", onAbort);
         controller = undefined;
         inFlight = undefined;
+        inFlightCount = 0;
+        phase = "idle";
       }
     })();
     return inFlight;
@@ -290,6 +319,14 @@ export function createLogger(options: LoggerOptions): Logger {
       sent,
       lastSentAt,
       retryAt: retryAt > Date.now() ? retryAt : null,
+      recorded,
+      lastRecordedAt,
+      lastTickAt,
+      inFlightCount,
+      lastAttemptAt,
+      phase,
+      lastHttpStatus,
+      lastFailure: lastFailure ? { ...lastFailure } : null,
       state: !active
         ? "disabled"
         : inFlight
@@ -338,6 +375,7 @@ export function createLogger(options: LoggerOptions): Logger {
       });
     }
     const timer = setInterval(() => {
+      lastTickAt = Date.now();
       void flush();
     }, flushInterval(options.flushIntervalMs));
     const onPageHide = (): void => {

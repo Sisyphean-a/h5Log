@@ -68,14 +68,14 @@ const detach = attachAxiosLogger(axiosClient, remoteLogger);
 | `captureConsole` | `true`；自动采集已有 console 输出 |
 | `captureErrors` | `true`；自动采集全局错误与未处理的 Promise 拒绝 |
 | `captureFetch` | `false`；使用 Fetch 时开启 |
-| `flushIntervalMs` | `250`；合批间隔，限制在 50–10000ms，通常保持默认 |
+| `flushIntervalMs` | `500`；合批间隔，限制在 50–10000ms，通常保持默认 |
 
 SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容无法恢复。对象及 Error 自有或继承的访问器不会被调用，以 `[Getter]` 标记；普通 Error 保留类型、消息、安全堆栈和 cause，惰性堆栈依赖自定义访问器或被替换的格式化钩子时不展开。日常输出继续使用 console，底层 `record()` 不是普通日志接入的必需步骤。
 
 ## 生命周期与故障
 
 - `remoteLogger.context`：只读应用、设备和当前页面会话信息。
-- `remoteLogger.getStatus()`：查看启用状态、队列、发送/丢弃数量、最近错误及退避状态。配置无效时采集器会禁用，原因在 `lastError` 中。
+- `remoteLogger.getStatus()`：读取独立的本地状态快照，不依赖日志上传；字段和测试环境读取入口见下方“本地诊断”。配置无效时采集器会禁用，原因在 `lastError` 中。
 - `await remoteLogger.flush()`：尝试发送当前一批；退避期间不强制重试，失败不向业务抛出，不保证清空全部队列。
 - `remoteLogger.stop()`：恢复 console、Fetch 与异常监听，清除定时器，取消上传并清空队列；需要尝试发送剩余日志时先调用 `flush()`。
 - Axios 挂载独立管理；停止采集时同时调用返回的 `detach()` 和 `remoteLogger.stop()`。
@@ -84,11 +84,42 @@ SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容�
 
 队列最多 1,000 条 / 4 MiB，每批最多 50 条；压缩与上传整体限时 5 秒，取消信号即使未被底层请求响应，也会释放发送锁并保留批次重试。网络、超时与压缩失败按 1–30 秒退避；除 429 外的 HTTP 4xx 属于上传被拒绝，该批次计入 dropped 并在 lastError 中报告，不无限重传；重新联网、恢复可见或 pageshow 时取消旧上传并立即重试。单条日志最多 128 KiB，快照最多展开 12 层、处理 2,000 个值并保留合计 64K 字符的字符串，超限会留下可见标记。页面退出、WebView 被终止或服务不可达时允许丢失，不提供持久化补发。
 
+### 本地诊断（不依赖上传）
+
+`getStatus()` 保留 `enabled`、`queued`、`dropped`、`sent`、`lastSentAt`、`lastError`、`retryAt` 和 `state`，新增以下诊断字段。所有时间均为 Unix 毫秒，尚无对应动作时为 `null`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `recorded` / `lastRecordedAt` | 累计成功入队数及最近事件的采集时间；数量包含随后被容量淘汰的日志，不包含采集失败或停用后的调用 |
+| `lastTickAt` | 现有上传定时器最近执行时间；即使队列为空也更新 |
+| `inFlightCount` | 当前批次持有的条数，已不包含在 `queued` 中 |
+| `lastAttemptAt` | 最近一次批次处理开始时间，包含压缩阶段 |
+| `phase` | `idle`、`compressing` 或 `uploading`；退避或等待下次定时回调时也为 `idle`，不代表队列为空 |
+| `lastHttpStatus` | 最近收到的 HTTP 状态；后续网络失败不会覆盖它，不能单独据此判断当前上传成功 |
+| `lastFailure` | 最近一次失败 `{ at, stage, message, httpStatus }`；无失败时为 `null`，恢复成功后仍保留 |
+
+`lastFailure.stage` 为 `initialization`、`capture`、`compression`、`network` 或 `http`；非 HTTP 失败的 `httpStatus` 为 `null`。成功上传清除 `lastError`，但保留 `lastFailure`，便于恢复后查看最近异常。修改返回的对象不会修改 SDK 内部状态。
+
+诊断只保留一份内存状态和最近失败的元数据，不保存业务正文、不增加定时器、存储写入或网络请求；页面重建后重置。SDK 不自动挂载全局变量。测试宿主如需在 vConsole 读取，可在初始化模块显式添加：
+
+```ts
+if (import.meta.env.MODE === "test") {
+  Object.defineProperty(window, "__H5_LOG_STATUS__", {
+    configurable: true,
+    value: () => remoteLogger.getStatus(),
+  });
+}
+```
+
+故障时在 vConsole 执行 `JSON.stringify(window.__H5_LOG_STATUS__())`。此入口只能读取状态，不提供 `flush()`、`stop()` 等控制能力；生产不要安装。已有手机页面必须先更新宿主构建，才能读取新字段。
+
+排查时结合多次快照：采集继续增长但 `lastTickAt` 长时间不更新，支持检查定时调度；`inFlightCount > 0` 时结合 `phase`、`lastAttemptAt` 检查停留阶段；`state === "retrying"` 时查看 `retryAt` 与 `lastFailure`。这些是定位线索，不单凭一张快照认定根因，也不能用 `lastHttpStatus` 代替服务端入库证据。
+
 ## 宿主开销与传输
 
 业务请求不等待日志上传，不代表 SDK 没有主线程开销：调用时的快照与 JSON 序列化仍是同步的，以保留当时的对象值。高频、大对象或长文本日志可能挤占帧预算；不要在逐帧回调或密集循环中反复输出大型对象。既有快照、队列和正文限制保持不变，不因网络优化而采样或额外删减内容。
 
-空队列不发送请求，默认 250ms 合批间隔不变。批次达到 8 KiB 且宿主支持 `CompressionStream` 时，使用原生异步 gzip 压缩，仅在体积变小时发送压缩内容；小批次或没有该能力的宿主发送普通 JSON，不加载压缩库。压缩失败会在 `getStatus().lastError` 中报告并保留批次重试，不抛给业务代码，也不伪装为成功。压缩仍有 CPU、内存和电量成本，真机流畅度需要在目标 WebView 上验证。
+空队列不发送请求，默认每 500ms 尝试合批上传。批次达到 8 KiB 且宿主支持 `CompressionStream` 时，使用原生异步 gzip 压缩，仅在体积变小时发送压缩内容；小批次或没有该能力的宿主发送普通 JSON，不加载压缩库。压缩失败会在 `getStatus().lastError` 中报告并保留批次重试，不抛给业务代码，也不伪装为成功。压缩仍有 CPU、内存和电量成本，真机流畅度需要在目标 WebView 上验证。
 
 ### 原生页面覆盖 WebView
 

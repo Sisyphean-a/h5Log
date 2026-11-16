@@ -81,6 +81,13 @@ export interface ServiceStatus {
     maxEventBytes: number;
   };
 }
+/** 最近一次失败的元数据；恢复成功后仍保留，不包含日志正文。 */
+export interface LoggerFailure {
+  at: number;
+  stage: "initialization" | "capture" | "compression" | "network" | "http";
+  message: string;
+  httpStatus: number | null;
+}
 export interface LoggerStatus {
   enabled: boolean;
   queued: number;
@@ -90,6 +97,22 @@ export interface LoggerStatus {
   lastSentAt: number | null;
   retryAt: number | null;
   state: "disabled" | "idle" | "sending" | "retrying";
+  /** 累计成功入队数，包含随后被容量淘汰的日志；停用后的调用不计入。 */
+  recorded: number;
+  /** 最近成功入队事件的采集时间，Unix 毫秒；尚无事件时为 null。 */
+  lastRecordedAt: number | null;
+  /** 现有上传定时器最近回调时间，Unix 毫秒；尚未执行时为 null。 */
+  lastTickAt: number | null;
+  /** 已移出待上传队列、当前批次持有的条数，不包含在 queued 中。 */
+  inFlightCount: number;
+  /** 最近一次批次处理（含压缩）开始时间，Unix 毫秒。 */
+  lastAttemptAt: number | null;
+  /** idle 不代表队列为空；退避或尚未到上传时机时也为 idle。 */
+  phase: "idle" | "compressing" | "uploading";
+  /** 最近收到的 HTTP 状态；后续网络失败不会覆盖它。 */
+  lastHttpStatus: number | null;
+  /** 最近失败的独立副本；成功只清空 lastError，不清除此历史。 */
+  lastFailure: LoggerFailure | null;
 }
 /** 采集器。日常日志直接使用 console；接口使用 Axios 接入器或 captureFetch。 */
 export interface Logger {
@@ -101,7 +124,7 @@ export interface Logger {
   flush(): Promise<void>;
   /** 恢复 console、Fetch 和异常监听，取消上传并清空队列；Axios 另调用挂载返回的 detach。 */
   stop(): void;
-  /** 查看启用状态、队列、发送/丢弃数量及错误；配置无效时禁用并在 lastError 中说明原因。 */
+  /** 读取独立状态快照，不触发上传、定时任务或存储 IO；配置无效时在 lastError 中说明原因。 */
   getStatus(): LoggerStatus;
 }
 /** 初始化仅需 enabled、appId、endpoint；其他选项保留默认即可。 */
@@ -122,7 +145,7 @@ export interface LoggerOptions {
   captureErrors?: boolean;
   /** 默认 false：使用原生 Fetch 请求时设为 true；Axios 实例另用 attachAxiosLogger 挂载。 */
   captureFetch?: boolean;
-  /** 默认 250ms；有效值四舍五入并限制为 50–10000ms，通常无需配置。 */
+  /** 默认 500ms；有效值四舍五入并限制为 50–10000ms，通常无需配置。 */
   flushIntervalMs?: number;
 }
 export const CONTEXT_LIMITS: Readonly<Record<keyof LogContext, number>> =
