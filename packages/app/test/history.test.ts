@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredLog } from "@h5-log/sdk";
 import { createLocalHistory, type LocalHistory } from "../src/web/history.js";
 
@@ -39,6 +39,7 @@ beforeEach(() => {
   indexedDB.deleteDatabase("h5-log");
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   history?.dispose();
   history = undefined;
 });
@@ -102,6 +103,36 @@ describe("浏览器本地历史", () => {
     restarted.append([log(9)]);
     const page = await restarted.page({ limit: 10, accept: acceptAll });
     expect(page.logs.map((item) => item.id)).toEqual([9]);
+  });
+
+  it("详情宽度跨实例保留，不影响日志，也不随日志清空或服务重启重置", async () => {
+    const local = await start();
+    expect(await local.loadDetailWidth()).toBeUndefined();
+    local.append([log(1)]);
+    await local.saveDetailWidth(640);
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1]);
+    await local.clear();
+    local.setServerId("server-b");
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs).toEqual([]);
+    expect(await local.loadDetailWidth()).toBe(640);
+    local.dispose();
+    history = createLocalHistory()!;
+    expect(await history.loadDetailWidth()).toBe(640);
+    await expect(history.saveDetailWidth(Number.NaN)).rejects.toThrow("详情宽度无效");
+    expect(await history.loadDetailWidth()).toBe(640);
+  });
+
+  it("详情宽度写入被中止时明确拒绝，不假装保存成功", async () => {
+    const local = await start();
+    await local.page({ limit: 1, accept: acceptAll });
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementationOnce(function (this: IDBObjectStore, value, key) {
+      const result = put.call(this, value, key);
+      this.transaction.abort();
+      return result;
+    });
+    await expect(local.saveDetailWidth(640)).rejects.toThrow();
+    expect(await local.loadDetailWidth()).toBeUndefined();
   });
 
   it("浏览器不支持 IndexedDB 时返回 undefined，工作台退回服务端窗口", () => {

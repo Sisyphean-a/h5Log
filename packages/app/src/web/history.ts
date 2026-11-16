@@ -6,6 +6,7 @@ const DB_NAME = "h5-log";
 const DB_VERSION = 1;
 const LOG_STORE = "logs";
 const META_STORE = "meta";
+const DETAIL_WIDTH_KEY = "ui:detail-width";
 const DEFAULT_MAX_LOGS = 50_000;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const FLUSH_DELAY_MS = 150;
@@ -26,6 +27,8 @@ export interface LocalHistory {
   }): Promise<LocalHistoryPage>;
   hasBefore(before: number, accept: (log: StoredLog) => boolean): Promise<boolean>;
   clear(): Promise<void>;
+  loadDetailWidth(): Promise<number | undefined>;
+  saveDetailWidth(width: number): Promise<void>;
   dispose(): void;
 }
 
@@ -324,6 +327,27 @@ export function createLocalHistory(
       totalCount = 0;
       totalBytes = 0;
       await writeMeta(database, { count: 0, bytes: 0 });
+    },
+    async loadDetailWidth(): Promise<number | undefined> {
+      const database = await open();
+      const transaction = database.transaction(META_STORE, "readonly");
+      const [record] = await Promise.all([
+        request<{ k: string; v: unknown } | undefined>(transaction.objectStore(META_STORE).get(DETAIL_WIDTH_KEY)),
+        finished(transaction),
+      ]);
+      if (record === undefined) return undefined;
+      if (typeof record.v !== "number" || !Number.isFinite(record.v) || record.v <= 0)
+        throw new Error("已保存的详情宽度无效");
+      return record.v;
+    },
+    async saveDetailWidth(width: number): Promise<void> {
+      if (!Number.isFinite(width) || width <= 0) throw new Error("详情宽度无效");
+      const database = await open();
+      const transaction = database.transaction(META_STORE, "readwrite");
+      await Promise.all([
+        request(transaction.objectStore(META_STORE).put({ k: DETAIL_WIDTH_KEY, v: width })),
+        finished(transaction),
+      ]);
     },
     dispose(): void {
       clearTimeout(timer);

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
-  NButton,
   NConfigProvider,
   NInput,
   NSelect,
@@ -15,7 +14,6 @@ import { clientLabel, relativeTime } from "./format.js";
 import LogList from "./components/LogList.vue";
 import LogDetailPanel from "./components/LogDetailPanel.vue";
 import StatusDialog from "./components/StatusDialog.vue";
-import SetupDialog from "./components/SetupDialog.vue";
 
 const history = createLocalHistory({
   onError: (message) => {
@@ -89,10 +87,21 @@ const themeOverrides: GlobalThemeOverrides = {
 const searchInput = ref(state.filter.search);
 const searchRef = ref<{ focus: () => void } | null>(null);
 const listEl = ref<HTMLElement>();
+const bodyEl = ref<HTMLElement>();
+const MIN_PANE_WIDTH = 320;
+const RESIZER_WIDTH = 12;
+const bodyWidth = ref(0);
+const preferredDetailWidth = ref<number>();
+const resizing = ref(false);
+const maxDetailWidth = computed(() => Math.max(MIN_PANE_WIDTH, bodyWidth.value - MIN_PANE_WIDTH - RESIZER_WIDTH));
+const detailWidth = computed(() => Math.min(maxDetailWidth.value, Math.max(
+  MIN_PANE_WIDTH,
+  preferredDetailWidth.value ?? Math.min(580, Math.max(360, bodyWidth.value * 0.34)),
+)));
+let resizeStart: { pointerId: number; x: number; width: number } | undefined;
+let layoutDisposed = false;
 const toast = ref("");
 const statusOpen = ref(false);
-const setupOpen = ref(false);
-const sidebarOpen = ref(false);
 const CLIENT_HIDE_KEY = "h5-log:hidden-clients-before";
 const hiddenBefore = ref(readHiddenBefore());
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -262,29 +271,6 @@ async function openService(): Promise<void> {
   await workbench.loadService();
 }
 
-function exportPage(): void {
-  const body = visibleLogs.value.map((log) => JSON.stringify(log)).join("\n");
-  const blob = new Blob([body], { type: "application/x-ndjson;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `h5-log-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast(`已导出当前 ${visibleLogs.value.length} 条`);
-}
-
-async function copyVisible(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(
-      visibleLogs.value.map((log) => JSON.stringify(log)).join("\n"),
-    );
-    showToast("已复制当前列表");
-  } catch {
-    showToast("复制失败，可在详情中选择内容手动复制");
-  }
-}
-
 function onKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   const typing =
@@ -297,9 +283,88 @@ function onKeydown(event: KeyboardEvent): void {
   }
   if (event.key === "Escape") {
     workbench.closeDetail();
-    sidebarOpen.value = false;
   }
 }
+
+async function restoreDetailWidth(): Promise<void> {
+  if (!history) {
+    showToast("浏览器不支持 IndexedDB，详情宽度无法保存");
+    return;
+  }
+  try {
+    const width = await history.loadDetailWidth();
+    // Rule: 迟到的读取不能覆盖本次页面中已开始的手动调整。
+    if (!layoutDisposed && !resizeStart && preferredDetailWidth.value === undefined)
+      preferredDetailWidth.value = width;
+  } catch (error) {
+    if (!layoutDisposed)
+      showToast(`读取详情宽度失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function saveDetailWidth(): Promise<void> {
+  const width = preferredDetailWidth.value;
+  if (width === undefined) return;
+  if (!history) {
+    showToast("浏览器不支持 IndexedDB，详情宽度无法保存");
+    return;
+  }
+  try {
+    await history.saveDetailWidth(width);
+  } catch (error) {
+    if (!layoutDisposed)
+      showToast(`保存详情宽度失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function finishResize(): void {
+  const adjusted = resizing.value && preferredDetailWidth.value !== undefined;
+  stopResize();
+  // Effect: 拖动结束才落盘，避免逐帧写 IndexedDB。
+  if (adjusted) void saveDetailWidth();
+}
+
+function stopResize(): void {
+  resizeStart = undefined;
+  resizing.value = false;
+}
+
+function updateBodyWidth(): void {
+  bodyWidth.value = bodyEl.value?.getBoundingClientRect().width ?? 0;
+  stopResize();
+}
+
+function startResize(event: PointerEvent): void {
+  if (event.button !== 0 || resizeStart) return;
+  updateBodyWidth();
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  resizeStart = { pointerId: event.pointerId, x: event.clientX, width: detailWidth.value };
+  resizing.value = true;
+  event.preventDefault();
+}
+
+function resizeDetail(event: PointerEvent): void {
+  if (!resizeStart || resizeStart.pointerId !== event.pointerId) return;
+  preferredDetailWidth.value = Math.min(maxDetailWidth.value, Math.max(
+    MIN_PANE_WIDTH, resizeStart.width + resizeStart.x - event.clientX,
+  ));
+}
+
+function resizeWithKeyboard(event: KeyboardEvent): void {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  updateBodyWidth();
+  const step = event.shiftKey ? 48 : 16;
+  const width = event.key === "Home" ? MIN_PANE_WIDTH
+    : event.key === "End" ? maxDetailWidth.value
+      : detailWidth.value + (event.key === "ArrowLeft" ? step : -step);
+  preferredDetailWidth.value = Math.min(maxDetailWidth.value, Math.max(MIN_PANE_WIDTH, width));
+  void saveDetailWidth();
+}
+
+watch(() => state.detail, (detail) => {
+  if (!detail) stopResize();
+});
 
 function onPageShow(event: PageTransitionEvent): void {
   if (event.persisted) workbench.resume();
@@ -310,6 +375,9 @@ function onPageHide(event: PageTransitionEvent): void {
 }
 
 onMounted(() => {
+  updateBodyWidth();
+  void restoreDetailWidth();
+  window.addEventListener("resize", updateBodyWidth);
   workbench.connect();
   void workbench.load();
   document.addEventListener("keydown", onKeydown);
@@ -317,6 +385,9 @@ onMounted(() => {
   window.addEventListener("pagehide", onPageHide);
 });
 onBeforeUnmount(() => {
+  layoutDisposed = true;
+  stopResize();
+  window.removeEventListener("resize", updateBodyWidth);
   document.removeEventListener("keydown", onKeydown);
   window.removeEventListener("pageshow", onPageShow);
   window.removeEventListener("pagehide", onPageHide);
@@ -329,63 +400,36 @@ onBeforeUnmount(() => {
 
 <template>
   <NConfigProvider :theme-overrides="themeOverrides">
-    <div class="app" :class="{ 'sidebar-open': sidebarOpen }">
-      <aside id="sidebar" class="sidebar">
-        <div class="sidebar-head">
-          <div class="brand">
-            <span class="brand-mark">h5</span>
-            <span class="brand-name">Log</span>
-          </div>
-          <span class="spacer" />
-          <button
-            type="button"
-            class="drawer-close"
-            aria-label="关闭侧栏"
-            @click="sidebarOpen = false"
-          >
-            ×
-          </button>
-        </div>
-
-        <div class="sidebar-scroll">
-          <NSelect
-            v-model:value="clientValue"
-            class="client-select"
-            size="small"
-            filterable
-            clearable
-            :consistent-menu-width="false"
-            :menu-props="{ style: { maxWidth: 'calc(100vw - 32px)' } }"
-            placeholder="选择设备"
-            :options="clientOptions"
-          />
-
-          <div class="scope-meta">
-            <span class="count">{{ state.total }} 条</span>
-            <span class="conn" :data-state="state.connection" title="工作台与日志服务的连接状态，不代表设备在线状态">
-              <i class="conn-dot" />{{ connectionText }}
-            </span>
-            <span v-if="state.localMode" class="badge">本地历史</span>
+    <div class="app">
+      <header class="workbench-header" aria-label="日志工具栏">
+        <div class="toolbar">
+          <div class="device-controls">
+            <NSelect
+              v-model:value="clientValue"
+              class="client-select"
+              aria-label="选择设备"
+              size="small"
+              filterable
+              clearable
+              :consistent-menu-width="false"
+              :menu-props="{ style: { maxWidth: 'calc(100vw - 32px)' } }"
+              placeholder="选择设备"
+              :options="clientOptions"
+            />
             <button
-              v-if="hiddenBefore"
+              v-if="hiddenBefore || canHideClients"
               type="button"
-              class="scope-action"
-              title="恢复显示所有设备"
-              @click="showAllClients"
+              class="icon-button scope-action"
+              :class="{ active: hiddenBefore }"
+              :aria-label="hiddenBefore ? '显示全部设备' : '隐藏其他设备'"
+              :title="hiddenBefore ? '显示全部设备' : '隐藏其他设备；不删除日志，设备重新上报后会再次出现'"
+              @click="hiddenBefore ? showAllClients() : hideOtherClients()"
             >
-              显示全部设备
-            </button>
-            <button
-              v-else-if="canHideClients"
-              type="button"
-              class="scope-action"
-              title="只影响当前浏览器的设备列表，不删除日志；设备重新上报后会再次出现"
-              @click="hideOtherClients"
-            >
-              隐藏其他设备
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.8 5.2A11 11 0 0 1 12 5c5.5 0 9 7 9 7a17 17 0 0 1-3 3.8M6.2 6.2A18 18 0 0 0 3 12s3.5 7 9 7a10 10 0 0 0 5-1.4" />
+              </svg>
             </button>
           </div>
-          <p v-if="hasStaleScope" class="scope-warn">{{ scopeTitle }}</p>
 
           <div class="search-wrap">
             <NInput
@@ -394,105 +438,110 @@ onBeforeUnmount(() => {
               clearable
               :value="searchInput"
               placeholder="搜索日志内容"
+              aria-label="搜索日志内容"
               @update:value="onSearchInput"
             />
             <kbd v-if="!searchInput" class="kbd">/</kbd>
           </div>
+          <NSelect
+            v-model:value="levelValue"
+            class="level-select"
+            aria-label="筛选日志级别"
+            size="small"
+            clearable
+            placeholder="级别"
+            :options="levelOptions"
+            :render-label="renderLevelLabel"
+          />
+          <NSelect
+            v-model:value="sourceValue"
+            class="source-select"
+            aria-label="筛选日志来源"
+            size="small"
+            multiple
+            clearable
+            placeholder="全部来源"
+            :max-tag-count="1"
+            :options="sourceOptions"
+          />
 
-          <div class="filter-stack">
-            <NSelect
-              v-model:value="levelValue"
-              size="small"
-              clearable
-              placeholder="级别"
-              :options="levelOptions"
-              :render-label="renderLevelLabel"
-            />
-            <NSelect
-              v-model:value="sourceValue"
-              size="small"
-              multiple
-              clearable
-              placeholder="全部来源"
-              :max-tag-count="2"
-              :options="sourceOptions"
-            />
-          </div>
-
-          <div class="side-actions">
+          <span v-if="state.localMode" class="badge">本地历史</span>
+          <div class="view-actions">
             <button
               type="button"
-              class="toggle"
-              :class="{ on: state.follow }"
+              class="icon-button toggle"
+              :class="{ active: state.follow }"
               :aria-pressed="state.follow"
-              title="跟随最新日志"
+              aria-label="跟随最新日志"
+              :title="state.follow ? '暂停跟随最新日志' : '跟随最新日志'"
               @click="toggleFollow"
             >
-              <i class="toggle-dot" />跟随
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h10M4 10h10M4 15h5M17 10v10m-4-4 4 4 4-4" />
+              </svg>
             </button>
             <div class="action-row">
-              <NButton
-                size="small"
-                quaternary
+              <button
+                type="button"
+                class="icon-button"
                 :disabled="!canOlder"
-                title="手动查看更早一页，点击“最新”返回实时日志"
+                aria-label="更早"
+                title="查看更早一页"
                 @click="workbench.loadOlder()"
               >
-                更早
-              </NButton>
-              <NButton size="small" quaternary @click="workbench.latest()">最新</NButton>
-              <NButton
-                size="small"
-                quaternary
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 11a9 9 0 1 1 2.7 7.4M3 5v6h6M12 7v5l3 2" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="icon-button"
+                aria-label="最新"
+                title="返回最新日志"
+                @click="workbench.latest()"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 4 5 5 5-5m-10 6 5 5 5-5M5 20h14" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="icon-button"
+                aria-label="清空视图"
                 title="清空当前视图，不删除服务器日志和本地历史"
                 @click="workbench.clearView()"
               >
-                清空视图
-              </NButton>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m14 3 7 7-10 10H7l-5-5L14 3Zm-7 7 7 7M11 20h10" />
+                </svg>
+              </button>
             </div>
           </div>
-        </div>
-
-        <div class="sidebar-foot">
-          <p v-if="state.error" class="error-text">读取失败：{{ state.error }}</p>
-          <div class="foot-actions">
-            <button type="button" class="quiet-link" @click="openService">服务状态</button>
-            <button type="button" class="quiet-link" @click="setupOpen = true">接入 SDK</button>
-            <button type="button" class="quiet-link" @click="copyVisible">复制列表</button>
-            <button type="button" class="quiet-link" @click="exportPage">导出列表</button>
-          </div>
-        </div>
-      </aside>
-
-      <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false" />
-
-      <div class="main">
-        <div class="mobile-bar">
           <button
             type="button"
-            class="bar-menu"
-            aria-label="打开侧栏"
-            aria-controls="sidebar"
-            :aria-expanded="sidebarOpen"
-            title="打开侧栏"
-            @click="sidebarOpen = true"
-          >
-            ☰
-          </button>
-          <span class="bar-scope">{{ scopeTitle }}</span>
-          <span class="spacer" />
-          <span v-if="state.error" class="bar-error">读取失败</span>
-          <span class="count">{{ state.total }} 条</span>
-          <span
-            class="conn"
+            class="icon-button service-button"
             :data-state="state.connection"
-            title="工作台与日志服务的连接状态，不代表设备在线状态"
+            aria-label="服务状态"
+            :title="`服务状态 · ${connectionText}（工作台与服务的连接，不代表设备在线）`"
+            aria-haspopup="dialog"
+            :aria-expanded="statusOpen"
+            @click="openService"
           >
-            <i class="conn-dot" />{{ connectionText }}
-          </span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="3" width="16" height="7" rx="2" />
+              <rect x="4" y="14" width="16" height="7" rx="2" />
+              <path d="M8 6.5h.01M8 17.5h.01M12 6.5h4M12 17.5h4M12 10v4" />
+              <path v-if="state.connection === 'offline'" d="m3 3 18 18" />
+            </svg>
+          </button>
         </div>
 
-        <div class="body">
+        <p v-if="hasStaleScope" class="scope-warn" role="status">{{ scopeTitle }}</p>
+        <p v-if="state.error" class="header-error error-text" role="alert">读取失败：{{ state.error }}</p>
+      </header>
+
+      <div class="main">
+        <div ref="bodyEl" class="body" :class="{ 'is-resizing': resizing }" :style="{ '--detail-width': `${detailWidth}px`, '--resizer-width': `${RESIZER_WIDTH}px` }">
           <main ref="listEl" class="workspace">
             <div v-if="visibleLogs.length > 0" class="list-head">
               <span>时间</span><span>来源</span><span>内容</span>
@@ -538,8 +587,29 @@ onBeforeUnmount(() => {
             />
           </main>
 
+          <div
+            v-if="state.detail"
+            class="detail-resizer"
+            role="separator"
+            tabindex="0"
+            aria-label="调整详情面板宽度"
+            aria-orientation="vertical"
+            aria-controls="log-detail"
+            :aria-valuemin="MIN_PANE_WIDTH"
+            :aria-valuemax="maxDetailWidth"
+            :aria-valuenow="Math.round(detailWidth)"
+            :aria-valuetext="`详情宽度 ${Math.round(detailWidth)} 像素`"
+            title="拖动调整详情宽度；左右方向键微调"
+            @pointerdown="startResize"
+            @pointermove="resizeDetail"
+            @pointerup="finishResize"
+            @pointercancel="finishResize"
+            @lostpointercapture="finishResize"
+            @keydown="resizeWithKeyboard"
+          />
           <LogDetailPanel
             v-if="state.detail"
+            id="log-detail"
             :detail="state.detail"
             @close="workbench.closeDetail()"
             @copy="showToast('已复制详情')"
@@ -550,7 +620,6 @@ onBeforeUnmount(() => {
       <div v-if="toast" class="toast">{{ toast }}</div>
 
       <StatusDialog v-model:show="statusOpen" :service="state.service" />
-      <SetupDialog v-model:show="setupOpen" />
     </div>
   </NConfigProvider>
 </template>
