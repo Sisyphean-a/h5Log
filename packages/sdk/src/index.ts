@@ -250,10 +250,10 @@ export function createLogger(options: LoggerOptions): Logger {
             throw requestController.signal.reason ?? new Error("日志采集已停止");
           phase = "uploading";
           failureStage = "network";
+          // Rule: 不占用页面共享的 keepalive 请求额度；页面退出仍只尽力发送。
           return nativeFetch!(endpoint, {
             method: "POST", headers, body,
             signal: requestController.signal,
-            keepalive: (typeof body === "string" ? bytes : body.byteLength) < 60 * 1024,
             credentials: "omit",
           });
         })();

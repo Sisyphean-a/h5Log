@@ -281,6 +281,30 @@ describe("SDK 采集和生命周期", () => {
     expect(client.getStatus()).toMatchObject({ queued: 1, sent: 0, lastError: "compression failed", state: "retrying" });
   });
 
+  it.each([
+    ["小批次", "small payload", false],
+    ["大批次 JSON", "large payload".repeat(1000), false],
+    ["大批次 gzip", "large payload".repeat(1000), true],
+  ] as const)("%s 不使用 keepalive，宿主拒绝此类请求时仍连续送达", async (_name, payload, compress) => {
+    vi.useRealTimers();
+    if (compress) vi.stubGlobal("CompressionStream", NativeCompressionStream);
+    upload.mockImplementation(async (_url: string, init: RequestInit) => {
+      if (init.keepalive) throw new TypeError("Failed to fetch");
+      return { ok: true, status: 202 };
+    });
+    const client = start();
+    for (let i = 0; i < 2; i++) {
+      client.record("custom", "info", payload);
+      await client.flush();
+      expect(client.getStatus()).toMatchObject({ sent: i + 1, queued: 0, dropped: 0, lastError: null });
+    }
+    expect(upload).toHaveBeenCalledTimes(2);
+    for (const [, init] of upload.mock.calls) {
+      expect(init.keepalive).not.toBe(true);
+      expect(init.headers["Content-Encoding"]).toBe(compress ? "gzip" : undefined);
+    }
+  });
+
   it("小批次 flush 在返回前发起请求，不等待定时器或微任务", async () => {
     const client = start();
     client.record("custom", "info", "before native navigation");
@@ -488,6 +512,26 @@ describe("SDK 采集和生命周期", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(client.getStatus()).toMatchObject({ queued: 0, lastError: null });
     expect(upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("连续网络失败达到 30 秒退避后仍继续尝试，不终止或丢弃批次", async () => {
+    upload.mockRejectedValue(new TypeError("Failed to fetch"));
+    const client = start();
+    client.record("custom", "info", "retained across failures");
+    await client.flush();
+    let attempts = 1;
+    for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+      const previous = client.getStatus();
+      expect(previous.retryAt).toBe(Date.now() + delay);
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(upload).toHaveBeenCalledTimes(attempts);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(upload).toHaveBeenCalledTimes(++attempts);
+      expect(client.getStatus()).toMatchObject({
+        enabled: true, queued: 1, dropped: 0, sent: 0, state: "retrying",
+        lastAttemptAt: previous.lastAttemptAt! + delay,
+      });
+    }
   });
 
   it("同步抛出的上传错误不会卡死后续发送", async () => {
