@@ -6,7 +6,9 @@ COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/app/package.json packages/app/package.json
 RUN npm ci
 COPY packages ./packages
-RUN npm run build
+# Rule: 密钥只作为构建参数注入页面，运行镜像不保留该环境变量。
+ARG VITE_ACCESS_KEY
+RUN VITE_ACCESS_KEY="$VITE_ACCESS_KEY" npm run build
 
 FROM node:24-alpine AS runtime
 WORKDIR /app

@@ -10,7 +10,9 @@ import {
 import type { LogClient } from "@h5-log/sdk";
 import { createWorkbench } from "./workbench.js";
 import { createLocalHistory } from "./history.js";
+import { isAccessKey, readAccessKey } from "./access.js";
 import { clientLabel, relativeTime } from "./format.js";
+import AccessGate from "./components/AccessGate.vue";
 import LogList from "./components/LogList.vue";
 import LogDetailPanel from "./components/LogDetailPanel.vue";
 import StatusDialog from "./components/StatusDialog.vue";
@@ -22,6 +24,9 @@ const history = createLocalHistory({
 });
 const workbench = createWorkbench({ history });
 const state = workbench.state;
+const accessState = ref<"checking" | "locked" | "open">("checking");
+const accessNotice = ref("");
+let workbenchStarted = false;
 
 // Rule: 控件与工作区统一使用蓝色强调、冷灰背景，绿色只表示成功状态。
 const themeOverrides: GlobalThemeOverrides = {
@@ -273,6 +278,7 @@ async function openService(): Promise<void> {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (accessState.value !== "open") return;
   const target = event.target as HTMLElement | null;
   const typing =
     target instanceof HTMLInputElement ||
@@ -368,27 +374,57 @@ watch(() => state.detail, (detail) => {
 });
 
 function onPageShow(event: PageTransitionEvent): void {
-  if (event.persisted) workbench.resume();
+  if (event.persisted && accessState.value === "open") workbench.resume();
 }
 
 function onPageHide(event: PageTransitionEvent): void {
-  if (event.persisted) workbench.suspend();
+  if (event.persisted && accessState.value === "open") workbench.suspend();
 }
 
 function onOnline(): void {
-  workbench.connect();
+  if (accessState.value === "open") workbench.connect();
 }
 
 function onVisibility(): void {
-  if (document.visibilityState === "visible") workbench.connect();
+  if (document.visibilityState === "visible" && accessState.value === "open")
+    workbench.connect();
+}
+
+function startWorkbench(): void {
+  if (workbenchStarted) return;
+  workbenchStarted = true;
+  workbench.connect();
+  void workbench.load();
+  void restoreDetailWidth();
+}
+
+// Rule: 未解锁时不建立 SSE、不读取日志，避免日志在蒙版背后提前进入页面。
+async function checkAccess(): Promise<void> {
+  let stored: string | undefined;
+  try {
+    stored = await readAccessKey();
+  } catch (error) {
+    accessNotice.value = `无法读取浏览器中的登录状态：${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (stored && isAccessKey(stored)) {
+    accessState.value = "open";
+    startWorkbench();
+  } else {
+    accessState.value = "locked";
+  }
+}
+
+function unlock(warning?: string): void {
+  accessState.value = "open";
+  accessNotice.value = "";
+  startWorkbench();
+  if (warning) showToast(warning);
 }
 
 onMounted(() => {
   updateBodyWidth();
-  void restoreDetailWidth();
   window.addEventListener("resize", updateBodyWidth);
-  workbench.connect();
-  void workbench.load();
+  void checkAccess();
   document.addEventListener("keydown", onKeydown);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("pagehide", onPageHide);
@@ -413,8 +449,13 @@ onBeforeUnmount(() => {
 
 <template>
   <NConfigProvider :theme-overrides="themeOverrides">
-    <div class="app">
-      <header class="workbench-header" aria-label="日志工具栏">
+    <div class="app" :class="{ 'access-locked': accessState !== 'open' }">
+      <header
+        class="workbench-header"
+        aria-label="日志工具栏"
+        :inert="accessState !== 'open' ? '' : undefined"
+        :aria-hidden="accessState !== 'open'"
+      >
         <div class="toolbar">
           <div class="device-controls">
             <NSelect
@@ -553,7 +594,11 @@ onBeforeUnmount(() => {
         <p v-if="state.error" class="header-error error-text" role="alert">读取失败：{{ state.error }}</p>
       </header>
 
-      <div class="main">
+      <div
+        class="main"
+        :inert="accessState !== 'open' ? '' : undefined"
+        :aria-hidden="accessState !== 'open'"
+      >
         <div ref="bodyEl" class="body" :class="{ 'is-resizing': resizing }" :style="{ '--detail-width': `${detailWidth}px`, '--resizer-width': `${RESIZER_WIDTH}px` }">
           <main ref="listEl" class="workspace">
             <div v-if="visibleLogs.length > 0" class="list-head">
@@ -639,6 +684,15 @@ onBeforeUnmount(() => {
         :last-stream-at="state.lastStreamAt"
         :client="currentClient"
       />
+
+      <Transition name="access-fade">
+        <AccessGate
+          v-if="accessState !== 'open'"
+          :checking="accessState === 'checking'"
+          :notice="accessNotice"
+          @unlock="unlock"
+        />
+      </Transition>
     </div>
   </NConfigProvider>
 </template>

@@ -1,6 +1,10 @@
 services:
   h5-log:
-    build: .
+    build:
+      context: .
+      args:
+        # 读取 .env 中的 VITE_ACCESS_KEY；未配置时使用公开默认值 2468。
+        VITE_ACCESS_KEY: ${VITE_ACCESS_KEY:-2468}
     image: h5-log:latest
     container_name: h5-log
     restart: unless-stopped

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { NSelect } from "naive-ui";
 import type { LogClient, LogPage, StoredLog } from "@h5-log/sdk";
 import App from "../src/web/App.vue";
+import { ACCESS_KEY, clearAccessKey, readAccessKey, saveAccessKey } from "../src/web/access.js";
 import * as localHistory from "../src/web/history.js";
 
 const client: LogClient = {
@@ -75,6 +76,10 @@ function pageBody(logs: StoredLog[]): LogPage {
     serverId: "server-a",
   };
 }
+
+beforeEach(async () => {
+  await saveAccessKey(ACCESS_KEY);
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -246,6 +251,7 @@ it("详情分隔条支持拖动、键盘和宽度边界，关闭重开保留当�
 
 it("详情宽度从 IndexedDB 恢复，拖动结束保存，重开页面沿用偏好而非窄窗口的限制值", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
+  await saveAccessKey(ACCESS_KEY);
   const entry = log(1, "记住详情宽度");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
@@ -303,6 +309,7 @@ it("详情宽度从 IndexedDB 恢复，拖动结束保存，重开页面沿用�
 
 it("迟到的宽度读取不覆盖手动调整，保存失败明确提示", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
+  await saveAccessKey(ACCESS_KEY);
   const local = localHistory.createLocalHistory()!;
   let resolveWidth!: (width: number) => void;
   vi.spyOn(local, "loadDetailWidth").mockReturnValue(new Promise((resolve) => { resolveWidth = resolve; }));
@@ -562,6 +569,39 @@ it("页面进入后退缓存时暂存工作台，返回后读取新日志并忽�
     expect(wrapper.text()).not.toContain("暂存前的日志");
     expect(wrapper.text()).not.toContain("旧连接的迟到日志");
     expect(wrapper.findAll(".log-row")).toHaveLength(1);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("未解锁时蒙版挡住日志，输入正确密钥后写入 IndexedDB 并直接解锁", async () => {
+  await clearAccessKey();
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    json: async () => pageBody([log(1, "验证后的日志")]),
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.find(".access-gate").exists()).toBe(true));
+    await vi.waitFor(() => expect(wrapper.find("#access-key").attributes("disabled")).toBeUndefined());
+    expect(wrapper.text()).toContain("输入访问密钥");
+    const streamsBefore = Stream.instances.length;
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(Stream.instances).toHaveLength(streamsBefore);
+
+    const input = wrapper.find("#access-key");
+    await input.setValue("0000");
+    await vi.waitFor(() => expect(wrapper.text()).toContain("密钥不正确"));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(Stream.instances).toHaveLength(streamsBefore);
+
+    await input.setValue(ACCESS_KEY);
+    await vi.waitFor(() => expect(wrapper.find(".access-gate").exists()).toBe(false));
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
+    expect(await readAccessKey()).toBe(ACCESS_KEY);
+    expect(fetchMock).toHaveBeenCalled();
   } finally {
     wrapper.unmount();
   }

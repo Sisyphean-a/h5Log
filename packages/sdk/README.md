@@ -86,6 +86,54 @@ SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容�
 
 ### 本地诊断（不依赖上传）
 
+**SDK 不会自动创建 `window.__H5_LOG_STATUS__`。更新 SDK、在宿主挂接入口、重新发布测试 H5 是三个必要步骤；只更新 SDK 或日志服务不够。** 已经打开的旧页面无法自动获得新代码，更新页面会丢失当前内存队列和诊断状态，应先保存仍可取得的现场信息。
+
+#### 1. 更新目标应用实际安装的 SDK
+
+按上方“初始化”重新打包、复制并安装新的 tgz。即使文件仍叫 `h5-log-sdk-0.1.0.tgz`，也必须重新安装，不能仅覆盖包文件；工作区项目需要更新实际接入 SDK 的应用依赖。保留原来的 `createLogger()` 和 Axios/Fetch 接入，不要为了诊断再创建一个采集器，否则会停止原采集器。
+
+#### 2. 在现有初始化模块添加测试入口
+
+在 `src/app/remoteLog.ts` 的 `remoteLogger` 创建之后、热更新清理代码之前添加。下面兼容“禁用时不创建实例”的接入方式，不需要修改各个业务页面：
+
+```ts
+if (import.meta.env.MODE === "test" && remoteLogger) {
+  const logger = remoteLogger;
+  Object.defineProperty(window, "__H5_LOG_STATUS__", {
+    configurable: true,
+    value: () => logger.getStatus(),
+  });
+}
+```
+
+入口只读取状态，不提供 `flush()`、`stop()` 等控制能力；只在测试构建安装，生产不要安装，也不要把整个 logger 暴露到全局。
+
+#### 3. 发布后先确认入口和 SDK 版本
+
+按宿主项目原有方式构建、发布 **test 模式的 H5**，手机手动加载新版本。不要等到下一次故障才检查：在手机 vConsole 的命令输入框执行：
+
+```js
+typeof window.__H5_LOG_STATUS__
+```
+
+应返回 `"function"`。再执行下方读取命令，输出应具有 `lastTickAt`、`phase`、`lastFailure` 等字段。若缺少新字段，说明宿主仍使用旧 SDK，检查实际安装的包及手机加载的构建。
+
+#### 4. 故障时保留现场，手动采集两份快照
+
+不要先刷新、杀 App、重新初始化或调用 `flush()` / `stop()`。在 vConsole 执行并复制返回的 JSON 文本：
+
+```js
+typeof window.__H5_LOG_STATUS__ === "function"
+  ? JSON.stringify(window.__H5_LOG_STATUS__())
+  : "未安装诊断入口"
+```
+
+间隔 5–10 秒，**手动**再执行一次，并附上故障时间及当时是否切换过前后台。不要用 `setTimeout()` 自动获取第二份，因为定时调度本身也是待检查对象。vConsole 中仍有 console/桥接输出，只能说明本地产生日志，不能证明已上传。
+
+如果返回 `"未安装诊断入口"` 或入口类型为 `"undefined"`，先检查宿主是否添加上述代码、日志开关与 test 模式是否匹配、初始化模块是否被应用入口导入，以及手机是否加载了新构建；不是靠重新运行读取命令解决。
+
+#### 状态字段与判断
+
 `getStatus()` 保留 `enabled`、`queued`、`dropped`、`sent`、`lastSentAt`、`lastError`、`retryAt` 和 `state`，新增以下诊断字段。所有时间均为 Unix 毫秒，尚无对应动作时为 `null`。
 
 | 字段 | 含义 |
@@ -100,20 +148,30 @@ SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容�
 
 `lastFailure.stage` 为 `initialization`、`capture`、`compression`、`network` 或 `http`；非 HTTP 失败的 `httpStatus` 为 `null`。成功上传清除 `lastError`，但保留 `lastFailure`，便于恢复后查看最近异常。修改返回的对象不会修改 SDK 内部状态。
 
-诊断只保留一份内存状态和最近失败的元数据，不保存业务正文、不增加定时器、存储写入或网络请求；页面重建后重置。SDK 不自动挂载全局变量。测试宿主如需在 vConsole 读取，可在初始化模块显式添加：
+诊断只保留一份内存状态和最近失败的元数据，不保存业务正文、不增加定时器、存储写入或网络请求；页面重建后重置。
 
-```ts
-if (import.meta.env.MODE === "test") {
-  Object.defineProperty(window, "__H5_LOG_STATUS__", {
-    configurable: true,
-    value: () => remoteLogger.getStatus(),
-  });
-}
+| 观察 | 如何判断 |
+| --- | --- |
+| 有新的可采集 console/接口事件，但 `recorded` 不增长 | 检查 `enabled`、采集器是否被替换或停止、接口是否仍走已挂接的实例；单纯空闲时不增长是正常现象 |
+| `recorded` 增长，但 `lastTickAt` 长时间不更新 | 支持检查 JS 定时调度；同时核对是否切到后台或原生页面，不直接宣称 WebView 已冻结 |
+| `inFlightCount > 0` | 结合 `phase` 和 `lastAttemptAt` 检查压缩或请求停留阶段；这部分条数不在 `queued` 中 |
+| `state === "retrying"` 且 `phase === "idle"` | 上次尝试失败，正在等待 `retryAt`；不是停止采集，也不是上传锁仍被占用 |
+| `lastFailure.stage === "network"` 且消息为 `Failed to fetch` | fetch 未取得可用响应；网络连接和浏览器请求策略等均可能导致，不能单凭此消息确定 TLS、CORS 或具体接口是否已到达服务端 |
+| `lastHttpStatus === 202`，同时有更新的网络失败 | 202 是历史响应，不能据此认为当前上传成功 |
+
+例如 `recorded: 109`、`sent: 96`、`queued: 13`、`dropped: 0`、`inFlightCount: 0`、`state: "retrying"` 表示采集过 109 条，其中 13 条仍在队列中等待重试，并非达到条数上限。`sent` 表示相应批次收到成功 HTTP 响应，不是逐条入库确认；实际入库仍需服务端证据。
+
+若现场显示网络阶段失败，可先在同一个故障页面读取日志服务健康接口。将下面地址替换为实际地址，并保留部署子路径，例如 `/h5-log/api/health`：
+
+```js
+fetch("https://logs.example.com/api/health", {
+  credentials: "omit", cache: "no-store", keepalive: false,
+})
+  .then(r => console.log("H5_LOG_HEALTH", r.status))
+  .catch(e => console.error("H5_LOG_HEALTH", String(e)));
 ```
 
-故障时在 vConsole 执行 `JSON.stringify(window.__H5_LOG_STATUS__())`。此入口只能读取状态，不提供 `flush()`、`stop()` 等控制能力；生产不要安装。已有手机页面必须先更新宿主构建，才能读取新字段。
-
-排查时结合多次快照：采集继续增长但 `lastTickAt` 长时间不更新，支持检查定时调度；`inFlightCount > 0` 时结合 `phase`、`lastAttemptAt` 检查停留阶段；`state === "retrying"` 时查看 `retryAt` 与 `lastFailure`。这些是定位线索，不单凭一张快照认定根因，也不能用 `lastHttpStatus` 代替服务端入库证据。
+健康 GET 也失败时检查该页面到日志域名的连接；GET 成功仅说明该请求可达，不能证明日志 POST、压缩请求或 keepalive 行为正常。这些均为定位线索，不单凭一张快照宣布真实断联已修复。
 
 ## 宿主开销与传输
 

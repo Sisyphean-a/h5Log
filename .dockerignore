@@ -6,3 +6,4 @@ node_modules
 .codestable
 *.tgz
 coverage
+.env*
