@@ -41,15 +41,7 @@ Vite 在 `5388` 提供工作台热更新，`/api` 默认代理到本地服务的
 
 SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一起部署。
 
-只需要部署一个 Node.js 服务，页面随服务一起提供。运行时不需要数据库、WebSocket 或 `node_modules`。可直接复制构建后的 `packages/app/dist` 到服务器运行，或使用随仓库提供的 Compose 配置（内部使用 Dockerfile）：
-
-```sh
-docker compose up -d --build
-```
-
-Compose 使用镜像 `h5-log:latest`、容器名 `h5-log`，将宿主机 `127.0.0.1:3685` 映射到容器端口 `3000`。部署前确认宿主机端口空闲；如有冲突，修改 `compose.yaml` 的宿主机端口并同步修改 Nginx。若已有同名容器，先确认其用途并自行处理命名冲突。
-
-镜像内固定 `HOST=0.0.0.0`、`PORT=3000`，以非 root 用户运行；日志只在容器进程内存，不挂载持久卷。只改宿主机端口时修改 `compose.yaml` 的 `ports`，健康检查跟随容器内的 `PORT`。
+只需要部署一个 Node.js 服务，页面随服务一起提供。运行时不需要数据库、WebSocket 或 `node_modules`；可使用 Docker Compose，或直接复制构建后的 `packages/app/dist` 到服务器运行，详见[部署](#部署)。
 
 SDK 接入步骤见 [SDK 说明](packages/sdk/README.md)。接入其他 H5 项目时先打包：
 
@@ -80,6 +72,64 @@ npm run pack:sdk
 
 ## 部署
 
+### Docker Compose
+
+服务器需要 Docker、Docker Compose、运行中的 Docker 守护进程和同机 Nginx，不需要安装 Node.js。以下以 `/data/www/h5-log` 为项目目录；执行 Docker 命令的账号需要 Docker 权限。首次构建需要访问 Docker 镜像仓库和 npm。已有项目目录时跳过克隆，进入已有目录即可。
+
+```sh
+cd /data/www
+git clone <仓库地址> h5-log
+cd /data/www/h5-log
+```
+
+先确认宿主机 `3685` 端口空闲（例如执行 `ss -lnt | grep ':3685'`），并确认不存在其他用途的同名 `h5-log` 容器。若端口冲突，修改 `compose.yaml` 的宿主机端口，并同步修改下面的 Nginx 代理端口；不要直接删除已有容器。
+
+构建并启动：
+
+```sh
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 h5-log
+curl http://127.0.0.1:3685/api/health
+```
+
+镜像是 `h5-log:latest`，容器名为 `h5-log`；默认只将宿主机 `127.0.0.1:3685` 映射到容器 `3000`，不直接对外开放端口。镜像内以非 root 用户运行，健康检查访问容器内的 `PORT`。容器使用 `unless-stopped` 重启策略，Docker 重启后未被手动停止的容器会自动启动。
+
+配置下方的 Nginx 代理后，访问 `https://<站点域名>/h5-log/`；检查配置并重载：
+
+```sh
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+只有配置检查通过才重载；HTTPS 可能由另一层代理或负载均衡提供，需确认请求会进入添加配置的 `server`。
+
+日常管理命令在项目目录执行：
+
+```sh
+cd /data/www/h5-log
+docker compose ps                     # 查看状态
+docker compose logs -f h5-log         # 查看日志，Ctrl+C 退出
+docker compose restart h5-log         # 重启
+docker compose stop                   # 停止
+docker compose start                  # 启动已停止的容器
+```
+
+更新已通过 Git 克隆的项目：确认当前分支和本地改动，再拉取目标版本并重新构建：
+
+```sh
+cd /data/www/h5-log
+git status
+git pull --ff-only
+docker compose up -d --build
+docker compose ps
+curl http://127.0.0.1:3685/api/health
+```
+
+如果源码通过其他方式上传，先更新完整源码，再执行 `docker compose up -d --build`。重启或重建会清空服务端内存中的日志；更新时也会短暂中断服务。失败时用 `docker compose logs --tail=100 h5-log` 查看，不要将依赖安装警告直接当作部署成功或失败的证据。
+
+### 直接运行 Node.js
+
 完成 `npm ci && npm run build` 后运行 `npm start`。默认监听 `127.0.0.1:3000`，适合由同机 Nginx 提供 HTTPS 入口。
 
 无 Docker 时只需把 `packages/app/dist` 拷到服务器，用 `node dist/server/cli.mjs` 启动（需要 Node.js 24.15+）。`dist` 包含自包含的服务进程和页面资产，不含第三方依赖。
@@ -97,7 +147,9 @@ npm run pack:sdk
 
 默认配置下进程稳定在约 45–55 MiB，突刺上传峰值约 80–100 MiB 后回落；Docker 镜像默认带 `--max-old-space-size=128 --max-semi-space-size=16`（实测峰值约 83 MiB）。调大 `MAX_MEMORY_MB` 时要同步放宽该上限，否则会 OOM。
 
-在目标站点已有的 HTTPS Nginx `server` 中新增以下配置，不需要修改站点的其他路径。示例使用 Compose 的默认端口，直接运行 Node.js 时将代理端口改为 `3000`：
+### Nginx 与 SDK 地址
+
+在目标站点已有的 Nginx `server` 中新增以下配置，不需要修改站点的其他路径。示例使用 Compose 的默认端口，直接运行 Node.js 时将代理端口改为 `3000`：
 
 ```nginx
 location = /h5-log {

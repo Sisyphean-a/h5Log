@@ -456,7 +456,54 @@ describe("工作台状态", () => {
     );
   });
 
-  it("切换详情时迟到响应不会覆盖当前选择，重启后的同 id 记录被拒绝", async () => {
+  it("点击后立即显示本地详情，不等待服务端往返，失败也不回到上一条", async () => {
+    let finish!: (value: Response) => void;
+    const fetchImpl = vi.fn().mockImplementation(
+      () => new Promise<Response>((resolve) => { finish = resolve; }),
+    );
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(1), log(2)];
+
+    const first = workbench.openDetail(1);
+    expect(workbench.state.detail?.log).toEqual(log(1));
+    finish(response({ log: log(1), related: [] }));
+    await first;
+
+    const second = workbench.openDetail(2);
+    expect(workbench.state.selectedId).toBe(2);
+    expect(workbench.state.detail).toEqual({ log: log(2), related: [] });
+    finish({ ok: false, status: 503 } as Response);
+    await second;
+    expect(workbench.state.detail?.log.id).toBe(2);
+    expect(workbench.state.notice).toContain("HTTP 503");
+  });
+
+  it("接口详情立即展示本地关联记录，再补全服务端关联记录", async () => {
+    let finish!: (value: Response) => void;
+    workbench = createWorkbench({
+      fetchImpl: vi.fn().mockImplementation(
+        () => new Promise<Response>((resolve) => { finish = resolve; }),
+      ),
+    });
+    const selected = httpLog(1, "request", "request-1");
+    const related = httpLog(2, "response", "request-1");
+    workbench.state.logs = [
+      selected,
+      related,
+      { ...related, id: 3, clientKey: "client-b" },
+      { ...related, id: 4, sessionId: "session-b" },
+      httpLog(5, "response", "request-2"),
+      { ...log(6), requestId: "request-1" },
+    ];
+    const opening = workbench.openDetail(1);
+    expect(workbench.state.detail).toEqual({ log: selected, related: [related] });
+    const earlier = httpLog(7, "request", "request-1");
+    finish(response({ log: selected, related: [related, earlier] }));
+    await opening;
+    expect(workbench.state.detail).toEqual({ log: selected, related: [related, earlier] });
+  });
+
+  it("切换详情时迟到响应不会覆盖当前选择", async () => {
     const deferred: ((value: Response) => void)[] = [];
     const fetchImpl = vi.fn().mockImplementation(
       () =>
@@ -478,10 +525,32 @@ describe("工作台状态", () => {
     );
     await first;
     expect(workbench.state.selectedId).toBe(2);
-    expect(workbench.state.detail).toBeUndefined();
+    expect(workbench.state.detail).toEqual({ log: log(2), related: [] });
 
     deferred[1]!(response({ log: log(2), related: [] }));
     await second;
     expect(workbench.state.detail?.log.id).toBe(2);
+  });
+
+  it("后台详情拒绝重启后复用 id 的记录，关闭后也不被迟到响应重开", async () => {
+    let finish!: (value: Response) => void;
+    workbench = createWorkbench({
+      fetchImpl: vi.fn().mockImplementation(
+        () => new Promise<Response>((resolve) => { finish = resolve; }),
+      ),
+    });
+    workbench.state.logs = [log(1)];
+    const opening = workbench.openDetail(1);
+    finish(response({ log: { ...log(1), eventId: "reused-id" }, related: [log(3)] }));
+    await opening;
+    expect(workbench.state.detail).toEqual({ log: log(1), related: [] });
+    expect(workbench.state.notice).toContain("服务已重启");
+
+    const reopening = workbench.openDetail(1);
+    workbench.closeDetail();
+    finish(response({ log: log(1), related: [log(3)] }));
+    await reopening;
+    expect(workbench.state.selectedId).toBeUndefined();
+    expect(workbench.state.detail).toBeUndefined();
   });
 });

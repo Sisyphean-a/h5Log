@@ -498,6 +498,21 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const generation = lifecycleVersion;
     state.selectedId = id;
     const selected = state.logs.find((log) => log.id === id);
+    const requestId = selected && requestIdOf(selected);
+    // Rule: 正文已在列表中，立即切换；网络只补全关联记录，不阻塞阅读。
+    state.detail = selected
+      ? {
+          log: selected,
+          related: requestId === undefined ? [] : state.logs.filter(
+            (log) =>
+              log.id !== id &&
+              log.source === "http" &&
+              log.clientKey === selected.clientKey &&
+              log.sessionId === selected.sessionId &&
+              requestIdOf(log) === requestId,
+          ),
+        }
+      : undefined;
     try {
       const response = await fetchImpl(`./api/logs/${id}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
