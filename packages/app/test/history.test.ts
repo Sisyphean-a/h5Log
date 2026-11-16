@@ -45,6 +45,122 @@ afterEach(() => {
 });
 
 describe("浏览器本地历史", () => {
+  it.each(["count", "bytes"] as const)("重复日志不重复计算 %s，也不提前淘汰历史", async (limit) => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ ...log(1), serverId: "server-a" })).length;
+    const local = await start(limit === "count" ? { maxLogs: 3 } : { maxLogs: 100, maxBytes: bytes * 3 });
+    const entries = [log(1), log(2), log(3)];
+    local.append(entries);
+    await local.page({ limit: 10, accept: acceptAll });
+    local.append(entries);
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1, 2, 3]);
+  });
+
+  it("多个页面交错及并发写入仍按共享容量淘汰", async () => {
+    const first = await start({ maxLogs: 3 });
+    first.append([log(1)]);
+    await first.page({ limit: 10, accept: acceptAll });
+    const second = createLocalHistory({ maxLogs: 3 })!;
+    try {
+      second.setServerId("server-a");
+      second.append([log(2)]);
+      await second.page({ limit: 10, accept: acceptAll });
+      first.append([log(3), log(4)]);
+      expect((await first.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([2, 3, 4]);
+      first.append([log(5)]);
+      second.append([log(6)]);
+      await Promise.all([first.page({ limit: 10, accept: acceptAll }), second.page({ limit: 10, accept: acceptAll })]);
+      expect((await first.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([4, 5, 6]);
+    } finally {
+      second.dispose();
+    }
+  });
+
+  it("服务切换丢弃未落盘旧批次，不把旧记录标成新实例", async () => {
+    const local = await start();
+    local.append([log(10)]);
+    local.setServerId("server-b");
+    local.append([log(1)]);
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1]);
+  });
+
+  it("旧批次写入途中切换实例，最终仅保留新实例记录", async () => {
+    const local = await start();
+    const put = IDBObjectStore.prototype.put;
+    let switched = false;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value, key) {
+      if (!switched && value?.id === 10) {
+        switched = true;
+        local.setServerId("server-b");
+        local.append([log(1)]);
+      }
+      return put.call(this, value, key);
+    });
+    local.append([log(10), log(11)]);
+    await local.page({ limit: 10, accept: acceptAll });
+    expect(switched).toBe(true);
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1]);
+  });
+
+  it("另一个页面切换实例后，旧页面不能再写回旧分区", async () => {
+    const first = await start();
+    first.append([log(1)]);
+    await first.page({ limit: 10, accept: acceptAll });
+    const second = createLocalHistory()!;
+    try {
+      second.setServerId("server-b");
+      second.append([log(2)]);
+      await second.page({ limit: 10, accept: acceptAll });
+      first.append([log(10)]);
+      expect((await first.page({ limit: 10, accept: acceptAll })).logs).toEqual([]);
+      expect((await second.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([2]);
+    } finally {
+      second.dispose();
+    }
+  });
+
+  it("旧版本错误计数在原库内校准，不删除有效日志或详情宽度", async () => {
+    const local = await start({ maxLogs: 3 });
+    await local.saveDetailWidth(640);
+    local.append([log(1), log(2), log(3)]);
+    await local.page({ limit: 10, accept: acceptAll });
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open("h5-log", 1);
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+    });
+    try {
+      const tx = database.transaction("meta", "readwrite");
+      const meta = tx.objectStore("meta");
+      meta.put({ k: "count", v: 300 });
+      meta.put({ k: "bytes", v: 1024 * 1024 });
+      meta.delete("accountingVersion");
+      await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error); });
+    } finally {
+      database.close();
+    }
+    local.dispose();
+    const reopened = await start({ maxLogs: 3 });
+    reopened.append([log(3)]);
+    expect((await reopened.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(await reopened.loadDetailWidth()).toBe(640);
+  });
+
+  it("日志事务失败明确拒绝且不留下计数半提交，后续写入可恢复", async () => {
+    const local = await start({ maxLogs: 3 });
+    local.append([log(1), log(2)]);
+    await local.page({ limit: 10, accept: acceptAll });
+    const put = IDBObjectStore.prototype.put;
+    const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value, key) {
+      const result = put.call(this, value, key);
+      if (value?.id === 3) this.transaction.abort();
+      return result;
+    });
+    local.append([log(3)]);
+    await expect(local.page({ limit: 10, accept: acceptAll })).rejects.toThrow();
+    spy.mockRestore();
+    local.append([log(4)]);
+    expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1, 2, 4]);
+  });
   it("按 id 从新到旧分页，返回时恢复为旧在前", async () => {
     const local = await start();
     local.append([log(1), log(2), log(3), log(4), log(5)]);

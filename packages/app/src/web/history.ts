@@ -1,12 +1,12 @@
 import type { StoredLog } from "@h5-log/sdk";
 
-// 本地历史：把工作台看过的日志存在浏览器 IndexedDB，服务端保留窗口之外的记录仍可回看。
-// Rule: 写入后台批量进行，不阻塞实时渲染；容量按条数与字节双上限淘汰最旧记录。
+// 本地历史：旁路保存工作台看过的日志，不承担可靠投递。
 const DB_NAME = "h5-log";
 const DB_VERSION = 1;
 const LOG_STORE = "logs";
 const META_STORE = "meta";
 const DETAIL_WIDTH_KEY = "ui:detail-width";
+const ACCOUNTING_VERSION = 1;
 const DEFAULT_MAX_LOGS = 50_000;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const FLUSH_DELAY_MS = 150;
@@ -43,6 +43,11 @@ export interface LocalHistoryOptions {
   onError?: (message: string) => void;
 }
 
+interface Accounting {
+  count: number;
+  bytes: number;
+}
+
 const encoder = new TextEncoder();
 
 function recordKey(serverId: string, id: number): [string, number] {
@@ -63,59 +68,82 @@ function request<T>(source: IDBRequest<T>): Promise<T> {
 function finished(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () =>
-      reject(transaction.error ?? new Error("本地存储事务失败"));
-    transaction.onabort = () =>
-      reject(transaction.error ?? new Error("本地存储事务已中止"));
+    transaction.onerror = () => reject(transaction.error ?? new Error("本地存储事务失败"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("本地存储事务已中止"));
   });
 }
 
-/** Failure: 浏览器禁用存储或配额不足时返回 undefined，工作台退回纯服务端窗口。 */
-export function createLocalHistory(
-  options: LocalHistoryOptions = {},
-): LocalHistory | undefined {
+async function transact<T>(
+  database: IDBDatabase,
+  stores: string[],
+  mode: IDBTransactionMode,
+  action: (transaction: IDBTransaction) => Promise<T>,
+): Promise<T> {
+  const transaction = database.transaction(stores, mode);
+  const done = finished(transaction);
+  try {
+    const result = await action(transaction);
+    await done;
+    return result;
+  } catch (error) {
+    // Failure: 已结束的事务不能再次中止，但原始失败仍向调用方传播。
+    try { transaction.abort(); } catch { /* 事务已结束。 */ }
+    await done.catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Failure: 不支持 IndexedDB 时返回 undefined；运行期失败显式报告。 */
+export function createLocalHistory(options: LocalHistoryOptions = {}): LocalHistory | undefined {
   if (typeof indexedDB === "undefined") return undefined;
   const maxLogs = options.maxLogs ?? DEFAULT_MAX_LOGS;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   let db: IDBDatabase | undefined;
   let opening: Promise<IDBDatabase> | undefined;
   let serverId = "";
-  let totalCount = 0;
-  let totalBytes = 0;
-  let pending: StoredLog[] = [];
+  let generation = 0;
+  let disposed = false;
+  const pending = new Map<number, StoredLog>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let ready: Promise<void> = Promise.resolve();
+  let flushing: Promise<void> | undefined;
   let failureReported = false;
 
   const fail = (error: unknown): void => {
-    if (failureReported) return;
+    if (disposed || failureReported) return;
     failureReported = true;
-    options.onError?.(
-      `本地历史不可用：${error instanceof Error ? error.message : "浏览器存储异常"}`,
-    );
+    options.onError?.(`本地历史不可用：${error instanceof Error ? error.message : "浏览器存储异常"}`);
   };
 
   function open(): Promise<IDBDatabase> {
+    if (disposed) return Promise.reject(new Error("本地历史已关闭"));
     if (db) return Promise.resolve(db);
     opening ??= new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
+      let blocked = false;
       req.onupgradeneeded = () => {
         const database = req.result;
         if (!database.objectStoreNames.contains(LOG_STORE))
-          database.createObjectStore(LOG_STORE, {
-            keyPath: ["serverId", "id"],
-          });
+          database.createObjectStore(LOG_STORE, { keyPath: ["serverId", "id"] });
         if (!database.objectStoreNames.contains(META_STORE))
           database.createObjectStore(META_STORE, { keyPath: "k" });
       };
       req.onsuccess = () => {
         const database = req.result;
-        database.onversionchange = () => database.close();
+        if (disposed || blocked) {
+          database.close();
+          reject(new Error(disposed ? "本地历史已关闭" : "本地存储被其他页面占用"));
+          return;
+        }
+        database.onversionchange = () => {
+          database.close();
+          if (db === database) { db = undefined; opening = undefined; }
+        };
         db = database;
         resolve(database);
       };
       req.onerror = () => reject(req.error ?? new Error("本地存储打开失败"));
-      req.onblocked = () => reject(new Error("本地存储被其他页面占用"));
+      req.onblocked = () => { blocked = true; reject(new Error("本地存储被其他页面占用")); };
     }).catch((error: unknown) => {
       opening = undefined;
       fail(error);
@@ -124,237 +152,224 @@ export function createLocalHistory(
     return opening;
   }
 
-  async function readMeta(database: IDBDatabase): Promise<{
-    serverId: string;
-    count: number;
-    bytes: number;
-  }> {
-    const transaction = database.transaction(META_STORE, "readonly");
-    const store = transaction.objectStore(META_STORE);
-    const [sid, count, bytes] = await Promise.all([
-      request(store.get("serverId")),
-      request(store.get("count")),
-      request(store.get("bytes")),
-    ]);
-    await finished(transaction).catch(() => undefined);
-    const read = (value: unknown): number =>
-      typeof value === "object" && value !== null && "v" in value
-        ? Number((value as { v: unknown }).v) || 0
-        : 0;
+  async function readMeta(store: IDBObjectStore) {
+    const keys = ["serverId", "count", "bytes", "accountingVersion"];
+    const rows = await Promise.all(keys.map((key) => request<{ v: unknown } | undefined>(store.get(key))));
+    const [sid, count, bytes, version] = rows.map((row) => row?.v);
+    const valid = typeof count === "number" && Number.isSafeInteger(count) && count >= 0 &&
+      typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0;
     return {
-      serverId:
-        typeof sid === "object" && sid !== null && "v" in sid
-          ? String((sid as { v: unknown }).v)
-          : "",
-      count: read(count),
-      bytes: read(bytes),
+      serverId: typeof sid === "string" ? sid : "",
+      count: valid ? count : 0,
+      bytes: valid ? bytes : 0,
+      version: valid ? version : undefined,
     };
   }
 
-  async function writeMeta(
-    database: IDBDatabase,
-    entries: Record<string, number | string>,
-  ): Promise<void> {
-    const transaction = database.transaction(META_STORE, "readwrite");
-    const store = transaction.objectStore(META_STORE);
-    for (const [key, value] of Object.entries(entries))
-      store.put({ k: key, v: value });
-    await finished(transaction).catch(() => undefined);
+  function writeMeta(store: IDBObjectStore, sid: string, accounting: Accounting): void {
+    for (const [k, v] of Object.entries({ serverId: sid, count: accounting.count, bytes: accounting.bytes, accountingVersion: ACCOUNTING_VERSION }))
+      store.put({ k, v });
   }
 
-  async function adoptServerId(database: IDBDatabase, next: string): Promise<void> {
-    const meta = await readMeta(database);
-    if (meta.serverId === next) {
-      totalCount = meta.count;
-      totalBytes = meta.bytes;
-      return;
-    }
-    const transaction = database.transaction(LOG_STORE, "readwrite");
-    transaction.objectStore(LOG_STORE).clear();
-    await finished(transaction).catch(() => undefined);
-    totalCount = 0;
-    totalBytes = 0;
-    await writeMeta(database, { serverId: next, count: 0, bytes: 0 });
-  }
-
-  async function evict(database: IDBDatabase): Promise<void> {
-    if (totalCount <= maxLogs && totalBytes <= maxBytes) return;
-    const transaction = database.transaction(LOG_STORE, "readwrite");
-    const store = transaction.objectStore(LOG_STORE);
-    const cursorRequest = store.openCursor(
-      IDBKeyRange.bound([serverId, 0], [serverId, Number.MAX_SAFE_INTEGER]),
-    );
-    let removed = 0;
-    let removedBytes = 0;
-    await new Promise<void>((resolve) => {
+  function recount(store: IDBObjectStore, sid: string): Promise<Accounting> {
+    const accounting = { count: 0, bytes: 0 };
+    return new Promise((resolve, reject) => {
+      const cursorRequest = store.openCursor();
+      cursorRequest.onerror = () => reject(cursorRequest.error);
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result;
-        if (
-          !cursor ||
-          (totalCount - removed <= maxLogs && totalBytes - removedBytes <= maxBytes)
-        ) {
-          resolve();
-          return;
-        }
+        if (!cursor) { resolve(accounting); return; }
         const record = cursor.value as StoredRecord;
-        removed++;
-        removedBytes += record.bytes;
+        if (record.serverId !== sid) cursor.delete();
+        else { accounting.count++; accounting.bytes += record.bytes; }
+        cursor.continue();
+      };
+    });
+  }
+
+  function evict(store: IDBObjectStore, sid: string, accounting: Accounting): Promise<void> {
+    if (accounting.count <= maxLogs && accounting.bytes <= maxBytes) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const cursorRequest = store.openCursor(IDBKeyRange.bound(recordKey(sid, 0), recordKey(sid, Number.MAX_SAFE_INTEGER)));
+      cursorRequest.onerror = () => reject(cursorRequest.error);
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor || (accounting.count <= maxLogs && accounting.bytes <= maxBytes)) { resolve(); return; }
+        accounting.count--;
+        accounting.bytes -= (cursor.value as StoredRecord).bytes;
         cursor.delete();
         cursor.continue();
       };
-      cursorRequest.onerror = () => resolve();
     });
-    await finished(transaction).catch(() => undefined);
-    totalCount -= removed;
-    totalBytes -= removedBytes;
-    await writeMeta(database, { count: totalCount, bytes: totalBytes });
   }
 
-  async function flush(): Promise<void> {
-    clearTimeout(timer);
-    timer = undefined;
-    if (pending.length === 0 || !serverId) return;
-    await ready;
-    const batch = pending;
-    pending = [];
-    try {
-      const database = await open();
-      const transaction = database.transaction(LOG_STORE, "readwrite");
+  async function writeBatch(database: IDBDatabase, sid: string, batch: StoredLog[], adopt = false): Promise<void> {
+    await transact(database, [LOG_STORE, META_STORE], "readwrite", async (transaction) => {
       const store = transaction.objectStore(LOG_STORE);
-      let added = 0;
-      let addedBytes = 0;
-      for (const log of batch) {
-        const base = { ...log, serverId };
+      const metadata = transaction.objectStore(META_STORE);
+      const meta = await readMeta(metadata);
+      let accounting: Accounting = { count: meta.count, bytes: meta.bytes };
+      if (meta.serverId !== sid) {
+        // Rule: 只有实例切换可以清旧分区；另一页面的迟到写入不能切回旧实例。
+        if (!adopt) return;
+        store.clear();
+        accounting = { count: 0, bytes: 0 };
+      } else if (meta.version !== ACCOUNTING_VERSION) {
+        // Rule: 旧计数只校准一次，不升级数据库版本，不清除有效日志或 UI 偏好。
+        accounting = await recount(store, sid);
+      }
+      const previous = await Promise.all(batch.map((log) => request<StoredRecord | undefined>(store.get(recordKey(sid, log.id)))));
+      for (let i = 0; i < batch.length; i++) {
+        const base = { ...batch[i]!, serverId: sid };
         const bytes = byteSize(base);
         store.put({ ...base, bytes } satisfies StoredRecord);
-        added++;
-        addedBytes += bytes;
+        if (!previous[i]) accounting.count++;
+        accounting.bytes += bytes - (previous[i]?.bytes ?? 0);
       }
-      await finished(transaction);
-      totalCount += added;
-      totalBytes += addedBytes;
-      await writeMeta(database, { count: totalCount, bytes: totalBytes });
-      await evict(database);
-    } catch (error) {
-      fail(error);
-    }
+      await evict(store, sid, accounting);
+      // Guarantee: 跨页面计数、日志覆盖与淘汰共用一个读写事务。
+      writeMeta(metadata, sid, accounting);
+    });
   }
 
   function schedule(): void {
-    if (pending.length >= FLUSH_BATCH) {
-      void flush();
-      return;
-    }
-    timer ??= setTimeout(() => void flush(), FLUSH_DELAY_MS);
+    if (disposed || flushing || pending.size === 0) return;
+    if (pending.size >= FLUSH_BATCH) { void flush().catch(() => undefined); return; }
+    timer ??= setTimeout(() => void flush().catch(() => undefined), FLUSH_DELAY_MS);
   }
 
-  async function scan(
-    database: IDBDatabase,
-    before: number | undefined,
-    limit: number,
-    accept: (log: StoredLog) => boolean,
-  ): Promise<LocalHistoryPage> {
+  function flush(): Promise<void> {
+    clearTimeout(timer);
+    timer = undefined;
+    if (disposed) return Promise.resolve();
+    if (flushing) return flushing.then(() => flush());
+    if (pending.size === 0 || !serverId) return ready;
+    const batch = [...pending.values()];
+    pending.clear();
+    const sid = serverId;
+    const epoch = generation;
+    const barrier = ready;
+    flushing = (async () => {
+      await barrier;
+      if (disposed || epoch !== generation) return;
+      const database = await open();
+      if (disposed || epoch !== generation) return;
+      await writeBatch(database, sid, batch);
+    })().catch((error: unknown) => {
+      fail(error);
+      throw error;
+    }).finally(() => {
+      flushing = undefined;
+      if (!disposed && pending.size > 0)
+        timer ??= setTimeout(() => void flush().catch(() => undefined), FLUSH_DELAY_MS);
+    });
+    return flushing;
+  }
+
+  async function scan(database: IDBDatabase, sid: string, before: number | undefined, limit: number, accept: (log: StoredLog) => boolean): Promise<LocalHistoryPage> {
     const upper = before !== undefined ? before - 1 : Number.MAX_SAFE_INTEGER;
     if (upper < 0) return { logs: [], hasMore: false };
-    const transaction = database.transaction(LOG_STORE, "readonly");
-    const store = transaction.objectStore(LOG_STORE);
-    const found: StoredLog[] = [];
-    let hasMore = false;
-    await new Promise<void>((resolve) => {
-      const request_ = store.openCursor(
-        IDBKeyRange.bound([serverId, 0], [serverId, upper]),
-        "prev",
-      );
-      request_.onsuccess = () => {
-        const cursor = request_.result;
-        if (!cursor) {
-          resolve();
-          return;
-        }
-        const { serverId: _sid, bytes: _bytes, ...log } =
-          cursor.value as StoredRecord;
-        if (accept(log)) {
-          if (found.length >= limit) {
-            hasMore = true;
-            resolve();
-            return;
-          }
-          found.push(log);
-        }
-        cursor.continue();
-      };
-      request_.onerror = () => resolve();
+    return transact(database, [LOG_STORE, META_STORE], "readonly", async (transaction) => {
+      const meta = await request<{ v: unknown } | undefined>(transaction.objectStore(META_STORE).get("serverId"));
+      if (meta?.v !== sid) return { logs: [], hasMore: false };
+      const found: StoredLog[] = [];
+      let hasMore = false;
+      await new Promise<void>((resolve, reject) => {
+        const cursorRequest = transaction.objectStore(LOG_STORE).openCursor(IDBKeyRange.bound(recordKey(sid, 0), recordKey(sid, upper)), "prev");
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          try {
+            const cursor = cursorRequest.result;
+            if (!cursor) { resolve(); return; }
+            const { serverId: _sid, bytes: _bytes, ...log } = cursor.value as StoredRecord;
+            if (accept(log)) {
+              if (found.length >= limit) { hasMore = true; resolve(); return; }
+              found.push(log);
+            }
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+      });
+      return { logs: found.reverse(), hasMore };
     });
-    await finished(transaction).catch(() => undefined);
-    return { logs: found.reverse(), hasMore };
+  }
+
+  async function page(options: { before?: number; limit: number; accept: (log: StoredLog) => boolean }): Promise<LocalHistoryPage> {
+    const sid = serverId;
+    const epoch = generation;
+    await flush();
+    if (!sid || disposed || epoch !== generation) return { logs: [], hasMore: false };
+    return scan(await open(), sid, options.before, options.limit, options.accept);
   }
 
   return {
-    setServerId(next: string): void {
-      if (next === serverId) return;
+    setServerId(next): void {
+      if (disposed || next === serverId) return;
       serverId = next;
-      // Rule: 先完成分区切换再写日志，避免重启后 id 从 1 开始时新旧记录混在一起。
-      ready = ready
-        .then(() => open())
-        .then((database) => adoptServerId(database, next))
-        .catch((error: unknown) => fail(error));
-    },
-    append(logs: StoredLog[]): void {
-      if (logs.length === 0 || !serverId) return;
-      pending.push(...logs);
-      schedule();
-    },
-    async page({ before, limit, accept }): Promise<LocalHistoryPage> {
-      await flush();
-      if (!serverId) return { logs: [], hasMore: false };
-      return scan(await open(), before, limit, accept);
-    },
-    async hasBefore(before, accept): Promise<boolean> {
-      await flush();
-      if (!serverId) return false;
-      const page = await scan(await open(), before, 1, accept);
-      return page.logs.length > 0 || page.hasMore;
-    },
-    async clear(): Promise<void> {
-      await ready;
-      pending = [];
+      ++generation;
+      pending.clear();
       clearTimeout(timer);
       timer = undefined;
-      const database = await open();
-      const transaction = database.transaction(LOG_STORE, "readwrite");
-      transaction.objectStore(LOG_STORE).clear();
-      await finished(transaction).catch(() => undefined);
-      totalCount = 0;
-      totalBytes = 0;
-      await writeMeta(database, { count: 0, bytes: 0 });
+      const adopt = async (): Promise<void> => {
+        if (disposed || next !== serverId) return;
+        const database = await open();
+        if (!disposed && next === serverId) await writeBatch(database, next, [], true);
+      };
+      ready = ready.then(adopt, adopt);
+      void ready.catch(fail);
+    },
+    append(logs): void {
+      if (disposed || !serverId) return;
+      for (const log of logs) pending.set(log.id, log);
+      schedule();
+    },
+    page,
+    async hasBefore(before, accept): Promise<boolean> {
+      const result = await page({ before, limit: 1, accept });
+      return result.logs.length > 0 || result.hasMore;
+    },
+    async clear(): Promise<void> {
+      if (disposed) return;
+      const epoch = ++generation;
+      pending.clear();
+      clearTimeout(timer);
+      timer = undefined;
+      const clear = async (): Promise<void> => {
+        const database = await open();
+        if (disposed || epoch !== generation) return;
+        await transact(database, [LOG_STORE, META_STORE], "readwrite", async (transaction) => {
+          const meta = transaction.objectStore(META_STORE);
+          const current = await readMeta(meta);
+          transaction.objectStore(LOG_STORE).clear();
+          writeMeta(meta, current.serverId, { count: 0, bytes: 0 });
+        });
+      };
+      ready = ready.then(clear, clear);
+      return ready;
     },
     async loadDetailWidth(): Promise<number | undefined> {
-      const database = await open();
-      const transaction = database.transaction(META_STORE, "readonly");
-      const [record] = await Promise.all([
-        request<{ k: string; v: unknown } | undefined>(transaction.objectStore(META_STORE).get(DETAIL_WIDTH_KEY)),
-        finished(transaction),
-      ]);
-      if (record === undefined) return undefined;
-      if (typeof record.v !== "number" || !Number.isFinite(record.v) || record.v <= 0)
-        throw new Error("已保存的详情宽度无效");
-      return record.v;
+      return transact(await open(), [META_STORE], "readonly", async (transaction) => {
+        const record = await request<{ v: unknown } | undefined>(transaction.objectStore(META_STORE).get(DETAIL_WIDTH_KEY));
+        if (record === undefined) return undefined;
+        if (typeof record.v !== "number" || !Number.isFinite(record.v) || record.v <= 0)
+          throw new Error("已保存的详情宽度无效");
+        return record.v;
+      });
     },
-    async saveDetailWidth(width: number): Promise<void> {
+    async saveDetailWidth(width): Promise<void> {
       if (!Number.isFinite(width) || width <= 0) throw new Error("详情宽度无效");
-      const database = await open();
-      const transaction = database.transaction(META_STORE, "readwrite");
-      await Promise.all([
-        request(transaction.objectStore(META_STORE).put({ k: DETAIL_WIDTH_KEY, v: width })),
-        finished(transaction),
-      ]);
+      await transact(await open(), [META_STORE], "readwrite", async (transaction) => {
+        await request(transaction.objectStore(META_STORE).put({ k: DETAIL_WIDTH_KEY, v: width }));
+      });
     },
     dispose(): void {
+      disposed = true;
+      ++generation;
+      pending.clear();
       clearTimeout(timer);
       timer = undefined;
       db?.close();
       db = undefined;
-      opening = undefined;
     },
   };
 }

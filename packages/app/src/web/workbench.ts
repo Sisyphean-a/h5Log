@@ -98,6 +98,10 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   let streamTimer: ReturnType<typeof setTimeout> | undefined;
   let pageController: AbortController | undefined;
   let requestVersion = 0;
+  let sessionCursor = 0;
+  let sessionRevision = 0;
+  let latestRetention: ClientUpdate | undefined;
+  let indexRead: { version: number; controller: AbortController; promise: Promise<void> } | undefined;
   const reads = new Set<AbortController>();
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let pending: StoredLog[] = [];
@@ -167,7 +171,10 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function addSessions(next: StoredLog[]): void {
+    let cursor = sessionCursor;
     for (const log of next) {
+      if (log.id <= sessionCursor) continue;
+      cursor = Math.max(cursor, log.id);
       const existing = state.sessions.find(
         (item) => item.sessionId === log.sessionId && item.clientKey === log.clientKey,
       );
@@ -187,13 +194,23 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         });
       }
     }
+    sessionCursor = cursor;
+  }
+
+  function retentionChangesSessions(update: ClientUpdate): boolean {
+    const expected = update.clients.reduce((total, client) =>
+      matcher.value.inScope({ appId: client.appId, environment: client.environment, clientKey: client.key })
+        ? total + client.logCount : total, 0);
+    return expected !== state.sessions.reduce((total, session) => total + session.logCount, 0);
   }
 
   async function load(before?: number): Promise<void> {
     if (lifecycle !== "active") return;
     const previousBefore = historyBefore;
     const previousCursor = state.cursor;
+    const evictionAtStart = state.evictedThroughId;
     const version = ++requestVersion;
+    indexRead?.controller.abort();
     pageController?.abort();
     const controller = new AbortController();
     pageController = controller;
@@ -226,6 +243,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       state.localHasMore = false;
       state.clients = page.clients ?? [];
       state.sessions = page.sessions ?? [];
+      sessionCursor = page.cursor;
       state.cursor = Math.max(page.cursor, pendingCursor);
       const incoming = pending.filter(
         (log) =>
@@ -247,7 +265,10 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         (log) => log.id > page.cursor && log.id > state.evictedThroughId,
       );
       addSessions(pendingSessionLogs);
-      const refreshSessions = pendingOverflow;
+      const refreshSessions = pendingOverflow || (state.evictedThroughId > evictionAtStart &&
+        latestRetention !== undefined && retentionChangesSessions(latestRetention));
+      const invalidatedPage = state.evictedThroughId > evictionAtStart &&
+        page.logs.some((log) => log.id <= state.evictedThroughId);
       const overflowed = pendingOverflow;
       const refreshPage =
         pendingInvalidated ||
@@ -263,7 +284,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       notice(emptyEarlier
         ? "没有更早的服务端日志，已保留当前页"
         : before !== undefined ? "正在查看更早日志，点击“最新”返回实时" : "");
-      if (refreshPage && (pendingInvalidated || historyBefore === undefined))
+      if (invalidatedPage || (refreshPage && (pendingInvalidated || historyBefore === undefined)))
         void load(historyBefore);
       else if (refreshSessions) void refreshSessionsIndex();
       else if (overflowed && historyBefore !== undefined) void load(historyBefore);
@@ -290,9 +311,15 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const oldest = state.logs[0];
     if (!history || !oldest || state.localMode) return;
     const version = requestVersion;
-    const has = await history.hasBefore(oldest.id, matches);
-    if (version !== requestVersion || state.loading || lifecycle !== "active") return;
-    state.localHasMore = has;
+    try {
+      const has = await history.hasBefore(oldest.id, matches);
+      if (version !== requestVersion || state.loading || lifecycle !== "active") return;
+      state.localHasMore = has;
+    } catch (error) {
+      if (version !== requestVersion || lifecycle !== "active") return;
+      state.localHasMore = false;
+      notice(`本地历史读取失败：${error instanceof Error ? error.message : "存储异常"}`, true);
+    }
   }
 
   async function loadOlder(): Promise<void> {
@@ -394,6 +421,9 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.clearAfter = 0;
     state.cursor = 0;
     state.evictedThroughId = 0;
+    sessionCursor = 0;
+    sessionRevision++;
+    latestRetention = undefined;
     state.localMode = false;
     state.selectedId = undefined;
     state.serverId = serverId;
@@ -412,6 +442,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         !pendingEventIds.has(log.id),
     );
     const scoped = unseen.filter(matcher.value.inScope);
+    if (scoped.some((log) => log.id > sessionCursor)) sessionRevision++;
     if (loading) {
       for (const log of unseen) {
         if (pendingEventIds.size < 20000) pendingEventIds.add(log.id);
@@ -477,6 +508,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   function handleClients(update: ClientUpdate): void {
     if (lifecycle !== "active") return;
     state.clients = update.clients;
+    latestRetention = update;
+    const previousLength = state.logs.length;
     const cutoffChanged = update.evictedThroughId > state.evictedThroughId;
     state.evictedThroughId = Math.max(
       state.evictedThroughId,
@@ -500,11 +533,13 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     )
       state.selectedId = undefined;
     if (cutoffChanged) {
-      void refreshSessionsIndex();
-      if (!state.localMode) {
-        if (!state.loading) void load(historyBefore);
-        else pendingInvalidated = true;
-      }
+      const removedRows = !state.localMode && state.logs.length < previousLength;
+      const changedSessions = retentionChangesSessions(update);
+      if (removedRows || changedSessions) sessionRevision++;
+      // Rule: 受影响列表的补读已经包含索引；无关设备的淘汰不制造查询。
+      if (state.loading) return;
+      if (removedRows) void load(historyBefore);
+      else if (changedSessions) void refreshSessionsIndex();
     }
   }
 
@@ -526,20 +561,35 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     else void load(historyBefore);
   }
 
-  async function refreshSessionsIndex(): Promise<void> {
-    if (lifecycle !== "active") return;
-    const version = requestVersion;
-    try {
-      const params = queryParams();
-      params.set("limit", "1");
-      const page = await readJson<LogPage>(`./api/logs?${params}`);
-      if (version !== requestVersion || lifecycle !== "active") return;
-      state.sessions = page.sessions;
-      state.clients = page.clients;
-    } catch {
-      if (version !== requestVersion || lifecycle !== "active") return;
-      notice("日志索引更新失败，请重新读取");
-    }
+  function refreshSessionsIndex(): Promise<void> {
+    if (lifecycle !== "active") return Promise.resolve();
+    if (indexRead?.version === requestVersion) return indexRead.promise;
+    indexRead?.controller.abort();
+    const current = { version: requestVersion, controller: new AbortController(), promise: Promise.resolve() };
+    indexRead = current;
+    current.promise = (async () => {
+      try {
+        while (lifecycle === "active" && current.version === requestVersion) {
+          const revision = sessionRevision;
+          const clients = state.clients;
+          const params = queryParams();
+          params.set("limit", "1");
+          const page = await readJson<LogPage>(`./api/logs?${params}`, current.controller.signal);
+          if (current.version !== requestVersion || lifecycle !== "active") return;
+          if (state.serverId && page.serverId !== state.serverId) return;
+          // Rule: 单路合并刷新；迟到索引不能覆盖期间的增量，稳定后再采用。
+          if (revision !== sessionRevision) continue;
+          state.sessions = page.sessions;
+          sessionCursor = page.cursor;
+          if (state.clients === clients) state.clients = page.clients;
+          return;
+        }
+      } catch {
+        if (current.version !== requestVersion || lifecycle !== "active" || current.controller.signal.aborted) return;
+        notice("日志索引更新失败，请重新读取");
+      }
+    })().finally(() => { if (indexRead === current) indexRead = undefined; });
+    return current.promise;
   }
 
   async function openDetail(id: number): Promise<void> {

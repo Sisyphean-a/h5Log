@@ -17,7 +17,7 @@ export function createLogMatcher(filter: LogFilter) {
   const search = filter.search?.trim().toLocaleLowerCase();
   const sources = new Set(source ? source.split(",") : []);
 
-  function inScope(log: StoredLog): boolean {
+  function inScope(log: Pick<StoredLog, "appId" | "environment" | "clientKey">): boolean {
     return (
       (!appId || log.appId === appId) &&
       (!environment || log.environment === environment) &&

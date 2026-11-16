@@ -246,13 +246,14 @@ watch(
 );
 
 watch(
-  () => state.logs.length,
+  [() => state.serverId, () => visibleLogs.value.at(-1)?.id, () => state.follow],
   async () => {
-    if (!state.follow || state.localMode) return;
     await nextTick();
+    if (!state.follow || state.localMode) return;
     const el = listEl.value;
     if (el) el.scrollTop = el.scrollHeight;
   },
+  { flush: "post" },
 );
 
 watch(

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLogger } from "../src/index.js";
+import axios, { AxiosError, AxiosHeaders } from "axios";
+import { attachAxiosLogger } from "../src/axios.js";
 import type { Logger } from "../src/types.js";
 import { CompressionStream as NativeCompressionStream } from "node:stream/web";
 import { gunzipSync } from "node:zlib";
@@ -37,6 +39,38 @@ function sent() {
 }
 
 describe("SDK 采集和生命周期", () => {
+  it("上传挂起后业务 200、失败及后续日志仍被记录，上传恢复后整批送达", async () => {
+    upload.mockImplementationOnce(() => new Promise(() => {}));
+    const client = start();
+    let failure: AxiosError | undefined;
+    const business = axios.create({ adapter: async (config) => {
+      const response = { config, status: config.url === "/fail" ? 500 : 200, statusText: "test", headers: new AxiosHeaders(), data: '{"ok":true}' };
+      if (config.url === "/fail") {
+        failure = new AxiosError("original failure", "ERR_BAD_RESPONSE", config, undefined, response);
+        throw failure;
+      }
+      return response;
+    } });
+    const detach = attachAxiosLogger(business, client);
+    try {
+      expect((await business.get("/first")).status).toBe(200);
+      expect((await business.get("/second")).status).toBe(200);
+      void client.flush();
+      expect((await business.get("/later")).status).toBe(200);
+      await expect(business.get("/fail")).rejects.toSatisfy((error) => error === failure);
+      client.record("console", "info", "after business calls");
+      expect(client.getStatus()).toMatchObject({ enabled: true, state: "sending", queued: 5 });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(upload).toHaveBeenCalledTimes(2);
+      expect(client.getStatus()).toMatchObject({ sent: 9, queued: 0, lastError: null });
+      const phases = sent().events.filter((event) => event.source === "http").map((event) => event.args[0] as { phase: string; status?: number });
+      expect(phases.filter((entry) => entry.phase === "response").map((entry) => entry.status)).toEqual([200, 200, 200]);
+      expect(phases.find((entry) => entry.phase === "error")?.status).toBe(500);
+      expect(sent().events.at(-1)!.args).toEqual(["after business calls"]);
+    } finally {
+      detach();
+    }
+  });
   it.each(["name", "message", "stack", "cause"] as const)("Error 的 %s 访问器不会被日志采集执行", async (property) => {
     const client = start();
     const error = new Error("unsafe error");

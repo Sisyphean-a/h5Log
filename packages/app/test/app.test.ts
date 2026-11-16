@@ -371,6 +371,36 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   wrapper.unmount();
 });
 
+it("达到 200 行上限后仍跟随最新日志，暂停时不滚动，恢复后立即到底", async () => {
+  const entries = Array.from({ length: 200 }, (_, index) => log(index + 1, `记录-${index + 1}`));
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => pageBody(entries) })));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(200));
+    await flushPromises();
+    const workspace = wrapper.find<HTMLElement>(".workspace").element;
+    let height = 1000;
+    Object.defineProperty(workspace, "scrollHeight", { configurable: true, get: () => height });
+    workspace.scrollTop = height;
+    height = 1100;
+    Stream.instances.at(-1)!.emit("logs", { logs: [log(201, "最新记录")], clients: [client] });
+    await flushPromises();
+    expect(wrapper.findAll(".log-row")).toHaveLength(200);
+    expect(workspace.scrollTop).toBe(height);
+    await wrapper.find(".toggle").trigger("click");
+    height = 1200;
+    Stream.instances.at(-1)!.emit("logs", { logs: [log(202, "暂停期间记录")], clients: [client] });
+    await flushPromises();
+    expect(workspace.scrollTop).toBe(1100);
+    await wrapper.find(".toggle").trigger("click");
+    await flushPromises();
+    expect(workspace.scrollTop).toBe(height);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it("滚动到顶部不会偷偷翻页，更早只由按钮触发", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const before = new URL(String(input), "http://localhost").searchParams.has("before");

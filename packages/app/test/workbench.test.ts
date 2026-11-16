@@ -102,6 +102,102 @@ afterEach(() => {
 });
 
 describe("工作台状态", () => {
+  it("无关的全局淘汰不触发当前设备的列表或索引查询", async () => {
+    const fetchImpl = vi.fn();
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.filter.clientKey = client.key;
+    workbench.state.logs = [log(100)];
+    workbench.state.sessions = [session()];
+    for (let id = 1; id <= 5; id++) {
+      workbench.handleClients({ clients: [{ ...client, logCount: 1 }], expiresBefore: 0, evictedThroughId: id });
+    }
+    await Promise.resolve();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([100]);
+  });
+
+  it("当前页被淘汰时只补读一份列表，复用其中的会话索引", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response(page([log(2)], 2)));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(1), log(2)];
+    workbench.state.sessions = [session({ logCount: 2 })];
+    workbench.handleClients({ clients: [{ ...client, logCount: 1 }], expiresBefore: 0, evictedThroughId: 1 });
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(new URL(String(fetchImpl.mock.calls[0]![0]), "http://localhost").searchParams.get("limit")).toBe("200");
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([2]);
+  });
+
+  it("当前页未受影响但会话计数变化时，只合并刷新索引", async () => {
+    let finish!: (value: Response) => void;
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockResolvedValue(response(page([log(100)], 100, { sessions: [session({ logCount: 9 })] })));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(100)];
+    workbench.state.sessions = [session({ logCount: 10 })];
+    for (let id = 1; id <= 5; id++) {
+      workbench.handleClients({ clients: [{ ...client, logCount: 9 }], expiresBefore: 0, evictedThroughId: id });
+    }
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    finish(response(page([log(100)], 100, { sessions: [session({ logCount: 9 })] })));
+    await workbench.refreshSessions();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.every(([url]) => new URL(String(url), "http://localhost").searchParams.get("limit") === "1")).toBe(true);
+    expect(workbench.state.sessions[0]!.logCount).toBe(9);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([100]);
+  });
+
+  it("索引读取期间的新事件不被迟到索引覆盖，下一次合并读取收敛", async () => {
+    let finish!: (value: Response) => void;
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockResolvedValue(response(page([log(2)], 2, { sessions: [session({ logCount: 2 })] })));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(1)];
+    workbench.state.sessions = [session()];
+    workbench.state.cursor = 1;
+    const reading = workbench.refreshSessions();
+    workbench.handleLogs({ logs: [log(2)], clients: [{ ...client, logCount: 2 }] });
+    finish(response(page([log(1)], 1)));
+    await reading;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(workbench.state.sessions[0]!.logCount).toBe(2);
+  });
+
+  it("索引快照已计入但尚未推送的事件不重复累加会话", async () => {
+    workbench = createWorkbench({ fetchImpl: vi.fn().mockResolvedValue(response(page([log(2)], 2, { sessions: [session({ logCount: 2 })] }))) });
+    workbench.state.logs = [log(1)];
+    workbench.state.sessions = [session()];
+    workbench.state.cursor = 1;
+    await workbench.refreshSessions();
+    workbench.handleLogs({ logs: [log(2)], clients: [{ ...client, logCount: 2 }] });
+    expect(workbench.state.sessions[0]!.logCount).toBe(2);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1, 2]);
+  });
+
+  it("列表请求期间无关淘汰不重复补读，响应内确有淘汰行才再补一次", async () => {
+    let finish!: (value: Response) => void;
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockResolvedValue(response(page([log(100)], 100)));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.logs = [log(100)];
+    workbench.state.sessions = [session()];
+    const first = workbench.load();
+    workbench.handleClients({ clients: [{ ...client, logCount: 1 }], expiresBefore: 0, evictedThroughId: 1 });
+    finish(response(page([log(100)], 100)));
+    await first;
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    fetchImpl.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const second = workbench.load();
+    workbench.handleClients({ clients: [{ ...client, logCount: 1 }], expiresBefore: 0, evictedThroughId: 2 });
+    finish(response(page([log(2), log(100)], 100)));
+    await second;
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([100]);
+  });
   it("静默连接超过三个心跳周期后重建，hello 补读且忽略旧流", async () => {
     vi.useFakeTimers();
     const streams: Stream[] = [];
