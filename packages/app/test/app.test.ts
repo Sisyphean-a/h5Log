@@ -86,7 +86,7 @@ afterEach(() => {
 it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务状态图标", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
-    json: async () => String(input) === "/api/health" ? undefined : pageBody([log(1, "当前记录")]),
+    json: async () => String(input) === "./api/health" ? undefined : pageBody([log(1, "当前记录")]),
   }));
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("EventSource", Stream);
@@ -114,7 +114,7 @@ it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务�
     expect(service.attributes("title")).toContain("实时连接");
     expect(wrapper.text()).not.toMatch(/接入 SDK|复制列表|导出列表/);
     await service.trigger("click");
-    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/health")).toBe(true));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "./api/health")).toBe(true));
     expect(document.body.textContent).toContain("正在读取服务状态");
   } finally {
     wrapper.unmount();
@@ -157,7 +157,7 @@ it("详情分隔条支持拖动、键盘和宽度边界，关闭重开保留当�
   const entry = log(1, "可调整宽度的详情");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
-    json: async () => String(input) === "/api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
+    json: async () => String(input) === "./api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
   })));
   vi.stubGlobal("EventSource", Stream);
   const wrapper = mount(App, { attachTo: document.body });
@@ -223,7 +223,7 @@ it("详情宽度从 IndexedDB 恢复，拖动结束保存，重开页面沿用�
   const entry = log(1, "记住详情宽度");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
-    json: async () => String(input) === "/api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
+    json: async () => String(input) === "./api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
   })));
   vi.stubGlobal("EventSource", Stream);
   const prefs = localHistory.createLocalHistory()!;
@@ -285,7 +285,7 @@ it("迟到的宽度读取不覆盖手动调整，保存失败明确提示", asyn
   const entry = log(1, "读取偏好期间操作");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
-    json: async () => String(input) === "/api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
+    json: async () => String(input) === "./api/logs/1" ? { log: entry, related: [] } : pageBody([entry]),
   })));
   vi.stubGlobal("EventSource", Stream);
   const wrapper = mount(App, { attachTo: document.body });
@@ -310,7 +310,7 @@ it("迟到的宽度读取不覆盖手动调整，保存失败明确提示", asyn
 it("默认盯住最近上报的客户端，输入关键词后新日志只显示匹配内容", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.startsWith("/api/logs?")) return { ok: true, json: async () => pageBody([log(1, "启动完成"), log(2, "订单详情已渲染")]) };
+    if (url.startsWith("./api/logs?")) return { ok: true, json: async () => pageBody([log(1, "启动完成"), log(2, "订单详情已渲染")]) };
     return { ok: true, json: async () => ({}) };
   });
   vi.stubGlobal("fetch", fetchMock);

@@ -20,7 +20,7 @@ npm start
 npm run dev
 ```
 
-工作台在 `http://127.0.0.1:5388`，日志服务在 `http://127.0.0.1:3000`。服务端和页面支持热更新；修改 SDK 后重新运行开发命令以构建 SDK。容器占用 3000 时先执行 `docker compose stop`；只改前端时用 Vite 热更新，不必重建镜像。
+工作台在 `http://127.0.0.1:5388`，日志服务在 `http://127.0.0.1:3000`。服务端和页面支持热更新；修改 SDK 后重新运行开发命令以构建 SDK。
 
 只改前端、同时保留正在运行的日志服务：
 
@@ -28,7 +28,7 @@ npm run dev
 npm run dev:web
 ```
 
-Vite 在 `5388` 提供工作台热更新，`/api` 代理到已在运行的 `3000`（Docker 容器或本地服务），不占用 3000，也不会清空容器里的日志。
+Vite 在 `5388` 提供工作台热更新，`/api` 默认代理到本地服务的 `3000`。若使用默认 Compose 容器，可在启动开发命令前设置 `H5_LOG_DEV_PROXY=http://127.0.0.1:3685`；不会清空容器里的日志。
 
 ## 两个包
 
@@ -47,7 +47,7 @@ SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一�
 docker compose up -d --build
 ```
 
-Compose 固定镜像 `h5-log:latest`、容器名 `h5-log` 和端口 3000，构建与重建只需这一条命令。若之前用手动 `docker run` 创建过同名容器，首次切换时先执行一次 `docker rm -f h5-log`。
+Compose 使用镜像 `h5-log:latest`、容器名 `h5-log`，将宿主机 `127.0.0.1:3685` 映射到容器端口 `3000`。部署前确认宿主机端口空闲；如有冲突，修改 `compose.yaml` 的宿主机端口并同步修改 Nginx。若已有同名容器，先确认其用途并自行处理命名冲突。
 
 镜像内固定 `HOST=0.0.0.0`、`PORT=3000`，以非 root 用户运行；日志只在容器进程内存，不挂载持久卷。只改宿主机端口时修改 `compose.yaml` 的 `ports`，健康检查跟随容器内的 `PORT`。
 
@@ -97,11 +97,15 @@ npm run pack:sdk
 
 默认配置下进程稳定在约 45–55 MiB，突刺上传峰值约 80–100 MiB 后回落；Docker 镜像默认带 `--max-old-space-size=128 --max-semi-space-size=16`（实测峰值约 83 MiB）。调大 `MAX_MEMORY_MB` 时要同步放宽该上限，否则会 OOM。
 
-在已有 HTTPS 的 Nginx `server` 中代理到服务：
+在目标站点已有的 HTTPS Nginx `server` 中新增以下配置，不需要修改站点的其他路径。示例使用 Compose 的默认端口，直接运行 Node.js 时将代理端口改为 `3000`：
 
 ```nginx
-location / {
-    proxy_pass http://127.0.0.1:3000;
+location = /h5-log {
+    return 301 /h5-log/;
+}
+
+location ^~ /h5-log/ {
+    proxy_pass http://127.0.0.1:3685/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Connection "";
@@ -111,7 +115,9 @@ location / {
 }
 ```
 
-HTTPS 的 H5 应配置 HTTPS 日志地址。服务部署在域名根路径；查看页、API、SSE 使用同一来源。服务面向受控测试环境，未内置账号和权限系统；需要入口认证时由反向代理承担，`ALLOWED_ORIGINS` 只限制浏览器跨域来源，不是认证机制。
+`proxy_pass` 末尾的 `/` 用于去掉 `/h5-log/` 前缀。检查并重载 Nginx 后，从站点的 `/h5-log/` 访问工作台；SDK 的 `endpoint` 填写该站点的完整 HTTPS 地址，路径为 `/h5-log/api/logs`。工作台不绑定域名，也支持部署在其他由代理去除前缀的子路径或根路径；子路径必须以 `/` 结尾。HTTPS 的 H5 应配置 HTTPS 日志地址。
+
+服务面向受控测试环境，未内置账号和权限系统；需要入口认证时由反向代理承担，`ALLOWED_ORIGINS` 只限制浏览器跨域来源，不是认证机制。日志保存在内存，重启或重建容器会清空。
 
 ## 检查
 

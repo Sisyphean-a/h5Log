@@ -175,7 +175,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const params = queryParams();
     if (before !== undefined) params.set("before", String(before));
     try {
-      const response = await fetchImpl(`/api/logs?${params}`, {
+      const response = await fetchImpl(`./api/logs?${params}`, {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -481,7 +481,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     try {
       const params = queryParams();
       params.set("limit", "1");
-      const response = await fetchImpl(`/api/logs?${params}`);
+      const response = await fetchImpl(`./api/logs?${params}`);
       if (!response.ok) return;
       const page = (await response.json()) as LogPage;
       if (version !== requestVersion || lifecycle !== "active") return;
@@ -499,7 +499,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.selectedId = id;
     const selected = state.logs.find((log) => log.id === id);
     try {
-      const response = await fetchImpl(`/api/logs/${id}`);
+      const response = await fetchImpl(`./api/logs/${id}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const detail = (await response.json()) as LogDetail;
       if (generation !== lifecycleVersion || state.selectedId !== id) return;
@@ -535,7 +535,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     if (lifecycle !== "active") return;
     const generation = lifecycleVersion;
     try {
-      const response = await fetchImpl("/api/health");
+      const response = await fetchImpl("./api/health");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const service = (await response.json()) as ServiceStatus;
       if (generation !== lifecycleVersion) return;
@@ -557,7 +557,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     const openStream =
       options.openStream ??
       ((url: string) => new EventSource(url) as unknown as StreamLike);
-    const current = openStream("/api/stream");
+    const current = openStream("./api/stream");
     stream = current;
     const listen = (type: string, listener: (event: Event) => void): void => {
       current.addEventListener(type, (event) => {

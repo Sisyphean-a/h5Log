@@ -5,4 +5,4 @@ services:
     container_name: h5-log
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3685:3000"

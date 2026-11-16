@@ -101,6 +101,23 @@ afterEach(() => {
 });
 
 describe("工作台状态", () => {
+  it("子路径下列表、详情、状态和实时流都使用同一前缀", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) =>
+      response(String(url).includes("logs/1") ? { log: log(1), related: [] } : page([log(1)], 1)),
+    );
+    const openStream = vi.fn((_url: string) => new Stream());
+    workbench = createWorkbench({ fetchImpl, openStream });
+    await workbench.load();
+    await workbench.openDetail(1);
+    await workbench.loadService();
+    await workbench.refreshSessions();
+    workbench.connect();
+    const base = "https://example.test/h5-log/";
+    const paths = fetchImpl.mock.calls.map(([url]) => new URL(String(url), base).pathname);
+    expect(paths).toEqual(["/h5-log/api/logs", "/h5-log/api/logs/1", "/h5-log/api/health", "/h5-log/api/logs"]);
+    expect(new URL(openStream.mock.calls[0]![0], base).pathname).toBe("/h5-log/api/stream");
+  });
+
   it("暂存后恢复当前历史页，忽略旧连接和迟到响应，最终销毁后不再恢复", async () => {
     let finish!: (value: Response) => void;
     const streams: Stream[] = [];

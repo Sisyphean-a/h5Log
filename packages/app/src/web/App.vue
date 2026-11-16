@@ -573,7 +573,7 @@ onBeforeUnmount(() => {
                 </template>
                 <template v-else>
                   在手机上操作，或打开
-                  <a class="link" href="/demo.html" target="_blank" rel="noopener">接入演示</a>
+                  <a class="link" href="./demo.html" target="_blank" rel="noopener">接入演示</a>
                   发一条测试日志。
                 </template>
               </p>

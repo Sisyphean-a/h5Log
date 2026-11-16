@@ -9,7 +9,7 @@ const logger = createLogger({
   appId: "demo-h5",
   environment: "test",
   deviceName: "浏览器演示",
-  endpoint: "/api/logs",
+  endpoint: "./api/logs",
 });
 const client = axios.create();
 const detach = attachAxiosLogger(client, logger);
@@ -44,7 +44,7 @@ document.getElementById("demo-object")!.addEventListener("click", () => {
 async function request(fail: boolean): Promise<void> {
   result.textContent = "请求中…";
   try {
-    const response = await client.get(fail ? "/api/not-found" : "/api/health", {
+    const response = await client.get(fail ? "./api/not-found" : "./api/health", {
       params: { from: "sdk-demo", message: message.value },
     });
     result.textContent = JSON.stringify(response.data, null, 2);
