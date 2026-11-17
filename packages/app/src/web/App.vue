@@ -10,6 +10,7 @@ import {
 import type { LogClient } from "@h5-log/sdk";
 import { createWorkbench } from "./workbench.js";
 import { createLogMatcher } from "../log-filter.js";
+import { parseLogRoute } from "../log-route.js";
 import { createLocalHistory } from "./history.js";
 import { isAccessKey, readAccessKey } from "./access.js";
 import { clientLabel, relativeTime } from "./format.js";
@@ -25,6 +26,11 @@ const history = createLocalHistory({
 });
 const workbench = createWorkbench({ history });
 const state = workbench.state;
+const initialRoute = parseLogRoute(window.location.pathname);
+if (initialRoute) {
+  state.filter.source = initialRoute.source;
+  state.filter.search = initialRoute.search.trim();
+}
 const accessState = ref<"checking" | "locked" | "open">("checking");
 const accessNotice = ref("");
 let workbenchStarted = false;

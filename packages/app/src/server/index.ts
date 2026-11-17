@@ -5,6 +5,7 @@ import { resolve, sep, extname } from "node:path";
 import { promisify } from "node:util";
 import { constants, createGzip, gzip, gunzip, type Gzip } from "node:zlib";
 import { createLogMatcher } from "../log-filter.js";
+import { parseLogRoute } from "../log-route.js";
 import { CONTEXT_LIMITS, MAX_BATCH_EVENTS, MAX_EVENT_BYTES } from "@h5-log/sdk";
 import type { LogEvent } from "@h5-log/sdk";
 import { LogStore } from "./store.js";
@@ -321,10 +322,12 @@ export function createLogServer(options: ServerOptions = {}) {
       }
       if (pathname.includes("\0") || pathname.includes("\\"))
         throw new HttpError(400, "路径无效");
+      const route = parseLogRoute(url.pathname);
+      const isLogRoute = route?.index === 0;
       const root = resolve(options.webRoot);
       const path = resolve(
         root,
-        `.${pathname === "/" ? "/index.html" : pathname}`,
+        `.${pathname === "/" || isLogRoute ? "/index.html" : pathname}`,
       );
       if (!path.startsWith(`${root}${sep}`))
         throw new HttpError(403, "路径不允许");
@@ -340,6 +343,11 @@ export function createLogServer(options: ServerOptions = {}) {
         )
           throw new HttpError(404, "页面不存在；请先执行 npm run build");
         throw error;
+      }
+      if (isLogRoute) {
+        const depth = url.pathname.split("/").filter(Boolean).length - (url.pathname.endsWith("/") ? 0 : 1);
+        const base = "../".repeat(depth) || "./";
+        file = Buffer.from(file.toString("utf8").replace("<head>", `<head><base href="${base}">`));
       }
       const types: Record<string, string> = {
         ".html": "text/html; charset=utf-8",

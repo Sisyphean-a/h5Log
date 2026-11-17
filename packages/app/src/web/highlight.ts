@@ -194,7 +194,7 @@ function httpSummaryTokens(text: string): LogToken[] {
 function leadingTag(
   text: string,
 ): { index: number; text: string } | undefined {
-  const match = /^\s*(\[[\w.:/-]{1,40}\])/.exec(text);
+  const match = /^\s*(\[[\w\p{Script=Han}.:/-]{1,40}\])/u.exec(text);
   const tag = match?.[1];
   if (!match || !tag) return undefined;
   return { index: match[0].length - tag.length, text: tag };

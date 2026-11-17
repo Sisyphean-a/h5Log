@@ -18,6 +18,11 @@ it("识别日志开头的方括号标签", () => {
     "tag",
     "[h5-JSBridge]",
   ]);
+  expect(kinds("[埋点] 首贷可申请首页展示 | home_page_view_login_h5")[0]).toEqual([
+    "tag",
+    "[埋点]",
+  ]);
+  expect(kinds(" [h5-页面] 展示")).toContainEqual(["tag", "[h5-页面]"]);
   expect(kinds("普通 [h5-page] 不在开头")).not.toContainEqual([
     "tag",
     "[h5-page]",

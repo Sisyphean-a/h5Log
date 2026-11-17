@@ -88,6 +88,29 @@ afterEach(() => {
   localStorage.clear();
 });
 
+it.each([
+  ["/h5-log/console/%E5%9F%8B%E7%82%B9", "console", "埋点"],
+  ["/h5-log/interface", "http", ""],
+  ["/h5-log/error/超时", "error", "超时"],
+])("路径 %s 初始化筛选", async (path, source, search) => {
+  window.history.replaceState({}, "", path);
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) => ({ ok: true, json: async () => pageBody([]) }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => {
+      const value = String(url);
+      return value.startsWith("./api/logs?") && new URLSearchParams(value.split("?")[1]).get("source") === source &&
+        (new URLSearchParams(value.split("?")[1]).get("search") ?? "") === search;
+    })).toBe(true));
+    expect((wrapper.find('input[placeholder="搜索日志内容"]').element as HTMLInputElement).value).toBe(search);
+  } finally {
+    wrapper.unmount();
+    window.history.replaceState({}, "", "/");
+  }
+});
+
 it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务状态图标", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
