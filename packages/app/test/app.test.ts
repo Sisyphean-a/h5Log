@@ -88,6 +88,65 @@ afterEach(() => {
   localStorage.clear();
 });
 
+it.each(["stream", "snapshot"])("%s 发现服务实例变化时刷新整页，首次连接和同实例重连不刷新", async (detection) => {
+  const reload = vi.fn();
+  vi.stubGlobal("location", { pathname: "/", reload });
+  let currentPage = pageBody([log(1, "旧实例记录")]);
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => currentPage }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(1));
+    const stream = Stream.instances.at(-1)!;
+    stream.emit("hello", { serverId: "server-a", clients: [client] });
+    await flushPromises();
+    expect(reload).not.toHaveBeenCalled();
+
+    stream.emit("error", {});
+    stream.emit("hello", { serverId: "server-a", clients: [client] });
+    await flushPromises();
+    expect(reload).not.toHaveBeenCalled();
+
+    currentPage = { ...pageBody([]), serverId: "server-b", clients: [], sessions: [] };
+    const reads = fetchMock.mock.calls.length;
+    if (detection === "stream") {
+      stream.emit("hello", { serverId: "server-b", clients: [] });
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(reads);
+    } else {
+      await wrapper.find('button[aria-label="最新"]').trigger("click");
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    }
+    expect(stream.close).toHaveBeenCalled();
+    stream.emit("hello", { serverId: "server-c", clients: [] });
+    await flushPromises();
+    expect(reload).toHaveBeenCalledTimes(1);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("设备目录清空时不把内部 JSON 标识当作设备名称", async () => {
+  const key = JSON.stringify(["26", "test", "phone-a"]);
+  const device = { ...client, key };
+  let currentPage = { ...pageBody([]), clients: [device], sessions: [] };
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => currentPage })));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    const select = wrapper.findComponent(NSelect);
+    await vi.waitFor(() => expect(select.text()).toContain("测试手机"));
+    currentPage = { ...pageBody([]), clients: [], sessions: [] };
+    Stream.instances.at(-1)!.emit("clients", { clients: [], expiresBefore: 0, evictedThroughId: 0 });
+    await flushPromises();
+    expect(select.text()).not.toContain(key);
+    expect(select.text()).toContain("选择设备");
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it.each([
   ["/h5-log/console/%E5%9F%8B%E7%82%B9", "console", "埋点"],
   ["/h5-log/interface", "http", ""],

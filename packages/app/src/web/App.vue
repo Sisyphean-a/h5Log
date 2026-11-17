@@ -26,6 +26,16 @@ const history = createLocalHistory({
 });
 const workbench = createWorkbench({ history });
 const state = workbench.state;
+watch(
+  () => state.serverId,
+  (serverId, previous) => {
+    if (!previous || serverId === previous) return;
+    // Rule: 新实例先停止旧页面的 IO，再整页加载新资源，避免跨版本继续运行。
+    workbench.suspend();
+    window.location.reload();
+  },
+  { flush: "sync" },
+);
 const initialRoute = parseLogRoute(window.location.pathname);
 if (initialRoute) {
   state.filter.source = initialRoute.source;
@@ -479,6 +489,7 @@ onBeforeUnmount(() => {
               :menu-props="{ style: { maxWidth: 'calc(100vw - 32px)' } }"
               placeholder="选择设备"
               :options="clientOptions"
+              :fallback-option="false"
             />
             <button
               v-if="hiddenBefore || canHideClients"
