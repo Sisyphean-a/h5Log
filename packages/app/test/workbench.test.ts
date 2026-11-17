@@ -481,6 +481,30 @@ describe("工作台状态", () => {
     expect(workbench.state.logs.map((item) => item.id)).toEqual([10, 11]);
   });
 
+  it("布尔搜索对实时增量与本地历史分页保持一致，设备范围仍独立生效", async () => {
+    const entry = (id: number, text: string): StoredLog => ({ ...log(id), args: [text] });
+    history = createLocalHistory()!;
+    history.setServerId("server-a");
+    await history.clear();
+    history.append([
+      entry(1, "Bridge token ready"), entry(2, "bridge token debug"), entry(3, "fallback"), entry(4, "bridge only"),
+      { ...entry(5, "fallback"), clientKey: "client-b" },
+    ]);
+    const fetchImpl = vi.fn().mockResolvedValue(response(page([entry(10, "bridge token ready")], 10)));
+    workbench = createWorkbench({ fetchImpl, history });
+    workbench.state.filter.clientKey = "client-a";
+    workbench.state.filter.search = "bridge && token && -debug || fallback";
+    await workbench.load();
+    workbench.handleLogs({
+      logs: [entry(11, "bridge token debug"), entry(12, "fallback"), { ...entry(13, "fallback"), clientKey: "client-b" }],
+      clients: [client],
+    });
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([10, 12]);
+    await workbench.loadOlder();
+    expect(workbench.state.localMode).toBe(true);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1, 3]);
+  });
+
   it("本地历史页不受服务端容量水位和过期窗口清空", async () => {
     const now = Date.now();
     history = createLocalHistory()!;

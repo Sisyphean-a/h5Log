@@ -87,6 +87,22 @@ it("搜索命中保留语义 token 并切分命中片段", () => {
   ).toBe("GET /api");
 });
 
+it("布尔搜索只高亮正向关键词，不高亮运算符和排除词", () => {
+  const text = "Bridge token ready && ||";
+  const pieces = highlightLogText(text, "BRIDGE && -token || ready");
+  expect(pieces.filter((piece) => piece.hit).map((piece) => piece.text)).toEqual(["Bridge", "ready"]);
+  expect(pieces.map((piece) => piece.text).join("")).toBe(text);
+  expect(highlightLogText(text, "-token").some((piece) => piece.hit)).toBe(false);
+});
+
+it("多词重叠或跨语义 token 时不重复正文、不丢失高亮", () => {
+  const text = "GET /api/orders";
+  const pieces = highlightLogText(text, "GET /api || /api/orders || orders");
+  expect(pieces.map((piece) => piece.text).join("")).toBe(text);
+  expect(pieces.filter((piece) => piece.hit).map((piece) => piece.text).join("")).toBe(text);
+  expect(pieces.some((piece) => piece.kind === "http-method" && piece.hit)).toBe(true);
+});
+
 it("空关键词不产生命中片段", () => {
   const pieces = highlightLogText("TypeError: 失败", "");
   expect(pieces.some((piece) => piece.hit)).toBe(false);

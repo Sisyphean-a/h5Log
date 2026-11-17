@@ -122,6 +122,26 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
     expect(result.retentionHours).toBe(12);
   });
 
+  it("布尔搜索在 HTTP 查询、分页和其他筛选中使用同一匹配规则", async () => {
+    await post([
+      event({ args: ["Bridge", { state: "token ready" }] }),
+      event({ args: ["bridge token debug"] }),
+      event({ args: ["bridge only"] }),
+      event({ args: ["fallback"], source: "http", level: "error" }),
+    ]);
+    const search = "BRIDGE && token && -debug || fallback";
+    const params = new URLSearchParams({ search, limit: "1" });
+    const latest = await page(params.toString());
+    expect(latest.logs.map((log) => log.args)).toEqual([["fallback"]]);
+    expect(latest.total).toBe(2);
+    expect(latest.hasMore).toBe(true);
+    params.set("before", String(latest.logs[0]!.id));
+    expect((await page(params.toString())).logs.map((log) => log.args)).toEqual([["Bridge", { state: "token ready" }]]);
+    const filtered = await page(new URLSearchParams({ search, source: "console", level: "info" }).toString());
+    expect(filtered.logs.map((log) => log.args)).toEqual([["Bridge", { state: "token ready" }]]);
+    expect(filtered.total).toBe(1);
+  });
+
   it("来源可按逗号分隔的并集筛选，单选和未指定来源仍保持原语义", async () => {
     await post([
       event({ source: "console" }),

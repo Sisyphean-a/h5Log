@@ -430,6 +430,40 @@ it("输入和替换关键词立即预览当前页并高亮，不等待防抖或�
   }
 });
 
+it("布尔搜索立即预览并高亮，提交后继续过滤实时日志", async () => {
+  const entries = [log(1, "启动完成"), log(2, "Bridge token ready"), log(3, "Bridge token debug"), log(4, "fallback")];
+  const query = "bridge && token && -debug || fallback";
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const search = new URL(String(input), "http://localhost").searchParams.get("search");
+    return { ok: true, json: async () => pageBody(search ? [entries[1]!, entries[3]!] : entries) };
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(4));
+    await flushPromises();
+    vi.useFakeTimers();
+    const requests = fetchMock.mock.calls.length;
+    await wrapper.find('input[placeholder*="搜索"]').setValue(query);
+    expect(wrapper.findAll(".log-row")).toHaveLength(2);
+    expect(wrapper.findAll(".search-hit").map((hit) => hit.text())).toEqual(["Bridge", "token", "fallback"]);
+    expect(fetchMock).toHaveBeenCalledTimes(requests);
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(new URL(String(fetchMock.mock.calls.at(-1)![0]), "http://localhost").searchParams.get("search")).toBe(query);
+    Stream.instances.at(-1)!.emit("logs", {
+      logs: [log(5, "Bridge token ready"), log(6, "Bridge token debug"), log(7, "无关日志"), log(8, "fallback")], clients: [client],
+    });
+    await flushPromises();
+    expect(wrapper.findAll(".log-row")).toHaveLength(4);
+    expect(wrapper.findAll(".log-row").map((row) => row.attributes("data-log-id"))).toEqual(["2", "4", "5", "8"]);
+  } finally {
+    wrapper.unmount();
+    vi.useRealTimers();
+  }
+});
+
 it("搜索慢网时保留命中行，快速替换关键词忽略旧响应，失败也不清空结果", async () => {
   const entries = [log(1, "submitTrack 订单已提交"), log(2, "启动完成")];
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();

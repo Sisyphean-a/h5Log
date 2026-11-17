@@ -503,6 +503,7 @@ onBeforeUnmount(() => {
               :value="searchInput"
               placeholder="搜索日志内容"
               aria-label="搜索日志内容"
+              title="搜索语法：a && b 同时包含；a || b 任一包含；-c 排除；&& 优先于 ||"
               @update:value="onSearchInput"
             />
             <kbd v-if="!searchInput" class="kbd">/</kbd>

@@ -10,7 +10,7 @@ context: [remote-logging](../../requirements/contexts/remote-logging.md)
 ## 入口与契约
 
 - src/log-route.ts、src/server/index.ts、src/web/App.vue：工作台路径可用 `console`、`interface`、`error` 和可选关键词初始化来源与搜索；服务端对这些路径返回工作台并设置相对基址，保证反向代理子路径下资源和接口仍指向部署目录。路径不控制其他筛选，门禁仍生效。
-- src/log-filter.ts：服务端快照、SSE 增量与本地历史共用的匹配规则。会话目录只受 appId、environment、clientKey 范围约束，日志行再按会话、级别、来源与去首尾空白后的关键词筛选；source 查询值以逗号分隔时取来源并集，空值表示不限来源，快照、实时增量与本地历史共用此语义。匹配器固定一次查询的条件，分页游标与清空水位仍由各自调用方掌握。
+- src/log-filter.ts、src/search-query.ts：服务端快照、工作台 SSE 增量与本地历史共用的匹配规则。会话目录只受 appId、environment、clientKey 范围约束，日志行再按会话、级别、来源和搜索筛选；source 查询值以逗号分隔时取来源并集，空值表示不限来源。搜索仍只匹配 args 的 JSON 文本，去首尾空白且忽略大小写；沿用 logcat 的 &&（且）、||（或）与词首 -（非），&& 优先，普通文本的空格不拆词，不解释括号、正则或字段语法。输入中的空项被忽略，没有有效项时按完整字面文本匹配；同一个编译器提供正向去重高亮词，避免查询、预览与高亮语义分叉。匹配器固定一次查询的条件，分页游标与清空水位仍由各自调用方掌握。
 
 日志服务：
 

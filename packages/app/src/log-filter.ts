@@ -1,4 +1,5 @@
 import type { StoredLog } from "@h5-log/sdk";
+import { compileSearchQuery } from "./search-query.js";
 
 export interface LogFilter {
   appId?: string;
@@ -14,7 +15,8 @@ export interface LogFilter {
 /** Rule: 会话目录只受客户端范围约束，日志行再应用其他筛选；一次编译固定本次查询的条件。 */
 export function createLogMatcher(filter: LogFilter) {
   const { appId, environment, clientKey, sessionId, level, source } = filter;
-  const search = filter.search?.trim().toLocaleLowerCase();
+  const search = filter.search?.trim();
+  const searchQuery = search ? compileSearchQuery(search) : undefined;
   const sources = new Set(source ? source.split(",") : []);
 
   function inScope(log: Pick<StoredLog, "appId" | "environment" | "clientKey">): boolean {
@@ -31,7 +33,7 @@ export function createLogMatcher(filter: LogFilter) {
       (!sessionId || log.sessionId === sessionId) &&
       (!level || log.level === level) &&
       (sources.size === 0 || sources.has(log.source)) &&
-      (!search || JSON.stringify(log.args).toLocaleLowerCase().includes(search))
+      (!searchQuery || searchQuery.matches(JSON.stringify(log.args)))
     );
   }
 

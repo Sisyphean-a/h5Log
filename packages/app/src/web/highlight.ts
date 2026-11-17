@@ -1,3 +1,5 @@
+import { compileSearchQuery } from "../search-query.js";
+
 export type LogTokenKind =
   | "plain"
   | "tag"
@@ -119,13 +121,14 @@ export function highlightLogText(text: string, query: string): LogPiece[] {
   if (cached) return cached;
 
   const tokens = tokenizeLogText(text);
-  if (!needle) {
+  const { highlightTerms } = compileSearchQuery(needle);
+  if (highlightTerms.length === 0) {
     const pieces = tokens.map(plainPiece);
     remember(piecesCache, key, pieces);
     return pieces;
   }
 
-  const ranges = findRanges(text.toLowerCase(), needle);
+  const ranges = findRanges(text.toLowerCase(), highlightTerms);
   const pieces: LogPiece[] = [];
   for (const token of tokens) {
     let from = token.start;
@@ -218,16 +221,28 @@ function findNextToken(
   return best;
 }
 
-function findRanges(text: string, needle: string): Array<[number, number]> {
+function findRanges(text: string, needles: string[]): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    const index = text.indexOf(needle, cursor);
-    if (index === -1) break;
-    ranges.push([index, index + needle.length]);
-    cursor = index + needle.length;
+  for (const needle of needles) {
+    let cursor = 0;
+    while (cursor < text.length) {
+      const index = text.indexOf(needle, cursor);
+      if (index === -1) break;
+      ranges.push([index, index + needle.length]);
+      cursor = index + needle.length;
+    }
   }
-  return ranges;
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous && range[0] <= previous[1]) {
+      previous[1] = Math.max(previous[1], range[1]);
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
 }
 
 function remember<T>(cache: Map<string, T>, key: string, value: T): void {
