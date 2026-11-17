@@ -71,7 +71,7 @@ const detach = attachAxiosLogger(axiosClient, remoteLogger);
 | `captureFetch` | `false`；使用 Fetch 时开启 |
 | `flushIntervalMs` | `500`；合批间隔，限制在 50–10000ms，通常保持默认 |
 
-测试宿主可用 `deviceId: new URLSearchParams(window.location.search).get("googleGaid") || undefined` 固定设备身份，`deviceName` 只传型号。显式设备 ID 不读写旧的随机设备存储；刷新或清除存储后，只要 GAID 相同仍归为同一设备，页面会话仍重新生成。工作台保留应用和环境的区分，同一设备跨应用使用同一型号编号；编号按当前保留目录的首次出现顺序生成，在最近上报排序变化时保持不变。
+测试宿主可用 `deviceId` 固定设备身份，`deviceName` 只传型号。当前十个包使用 `gaid:<googleGaid>`；缺少 GAID 时使用 `model:<归一化设备型号>`，不读写旧的随机设备存储。刷新或清除存储后，只要身份来源相同仍归为同一设备；后续获得 GAID 会按约定切换为新设备。页面会话仍重新生成。工作台保留应用和环境的区分，同一设备跨应用使用同一型号编号；编号按当前保留目录的首次出现顺序生成，在最近上报排序变化时保持不变。
 
 SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容无法恢复。对象及 Error 自有或继承的访问器不会被调用，以 `[Getter]` 标记；普通 Error 保留类型、消息、安全堆栈和 cause，惰性堆栈依赖自定义访问器或被替换的格式化钩子时不展开。日常输出继续使用 console，底层 `record()` 不是普通日志接入的必需步骤。
 
