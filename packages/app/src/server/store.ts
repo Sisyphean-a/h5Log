@@ -147,7 +147,26 @@ export class LogStore {
 
   clients(): LogClient[] {
     this.prune();
-    return [...this.clientMap.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+    const models = new Map<string, Map<string, number>>();
+    // Rule: 按设备首次出现顺序编号，同一设备跨应用复用编号，不随最近上报排序变化。
+    for (const client of this.clientMap.values()) {
+      if (!client.deviceName) continue;
+      let devices = models.get(client.deviceName);
+      if (!devices) {
+        devices = new Map();
+        models.set(client.deviceName, devices);
+      }
+      if (!devices.has(client.deviceId))
+        devices.set(client.deviceId, devices.size + 1);
+    }
+    return [...this.clientMap.values()]
+      .map((client) => {
+        const devices = models.get(client.deviceName);
+        return devices && devices.size > 1
+          ? { ...client, deviceName: `${client.deviceName}-${devices.get(client.deviceId)}` }
+          : client;
+      })
+      .sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
   page(filter: LogFilter = {}): LogPage {

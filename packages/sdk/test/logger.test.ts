@@ -38,6 +38,26 @@ function sent() {
   };
 }
 
+describe("SDK 设备身份", () => {
+  it("使用宿主提供的稳定标识，不读写随机设备存储，并随日志上传", async () => {
+    const reads = vi.spyOn(Storage.prototype, "getItem").mockReturnValue("old-random-device");
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const client = start({ deviceId: "gaid-phone-a", deviceName: "SM-A156U" });
+    client.record("custom", "info", "identity-probe");
+    await client.flush();
+
+    expect(client.context).toMatchObject({ deviceId: "gaid-phone-a", deviceName: "SM-A156U" });
+    expect(sent().events[0]).toMatchObject({ deviceId: "gaid-phone-a", deviceName: "SM-A156U" });
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+
+    const session = client.context.sessionId;
+    const reopened = start({ deviceId: "gaid-phone-a" });
+    expect(reopened.context.deviceId).toBe("gaid-phone-a");
+    expect(reopened.context.sessionId).not.toBe(session);
+  });
+});
+
 describe("SDK 本地诊断", () => {
   it("区分采集、在途批次和定时器心跳，读取快照不产生 IO 或额外定时器", async () => {
     vi.setSystemTime(10000);

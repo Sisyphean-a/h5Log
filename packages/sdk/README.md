@@ -6,10 +6,10 @@
 
 ## 1. 初始化：只需 3 项配置
 
-在 SDK 仓库运行 `npm run pack:sdk`，将新生成的 `h5-log-sdk-0.1.0.tgz` 复制到目标 H5 项目后安装：
+在 SDK 仓库运行 `npm run pack:sdk`，将新生成的 `h5-log-sdk-0.1.1.tgz` 复制到目标 H5 项目后安装：
 
 ```sh
-npm install ./h5-log-sdk-0.1.0.tgz
+npm install ./h5-log-sdk-0.1.1.tgz
 ```
 
 新增 `src/app/remoteLog.ts`（以下以 Vite 为例）：
@@ -64,11 +64,14 @@ const detach = attachAxiosLogger(axiosClient, remoteLogger);
 | 选项 | 默认值与用途 |
 | --- | --- |
 | `environment` | `"test"`；区分多个测试环境时再设置实际环境名 |
-| `deviceName` | 空；需要自定义工作台显示名称时设置，设备和会话标识自动生成 |
+| `deviceId` | 默认使用浏览器本地标识；宿主有稳定设备 ID 时显式传入，例如 URL 中的 `googleGaid` |
+| `deviceName` | 空；可传入设备型号，同型号的不同设备由工作台添加 `-1`、`-2`、`-3` 区分 |
 | `captureConsole` | `true`；自动采集已有 console 输出 |
 | `captureErrors` | `true`；自动采集全局错误与未处理的 Promise 拒绝 |
 | `captureFetch` | `false`；使用 Fetch 时开启 |
 | `flushIntervalMs` | `500`；合批间隔，限制在 50–10000ms，通常保持默认 |
+
+测试宿主可用 `deviceId: new URLSearchParams(window.location.search).get("googleGaid") || undefined` 固定设备身份，`deviceName` 只传型号。显式设备 ID 不读写旧的随机设备存储；刷新或清除存储后，只要 GAID 相同仍归为同一设备，页面会话仍重新生成。工作台保留应用和环境的区分，同一设备跨应用使用同一型号编号；编号按当前保留目录的首次出现顺序生成，在最近上报排序变化时保持不变。
 
 SDK 记录调用时的对象快照；业务代码已经摘要或截断的内容无法恢复。对象及 Error 自有或继承的访问器不会被调用，以 `[Getter]` 标记；普通 Error 保留类型、消息、安全堆栈和 cause，惰性堆栈依赖自定义访问器或被替换的格式化钩子时不展开。日常输出继续使用 console，底层 `record()` 不是普通日志接入的必需步骤。
 

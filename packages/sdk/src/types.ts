@@ -137,7 +137,9 @@ export interface LoggerOptions {
   endpoint: string;
   /** 默认 "test"；接入多个测试环境时设置实际环境名，最多 64 字符。 */
   environment?: string;
-  /** 可选显示名称，默认空；设备标识自动生成，无需手动传入，最多 128 字符。 */
+  /** 可选稳定设备标识，最多 256 字符；宿主可传入 googleGaid，未传时沿用浏览器本地标识。 */
+  deviceId?: string;
+  /** 可选设备型号等显示名称，默认空，最多 128 字符；同型号设备由工作台区分。 */
   deviceName?: string;
   /** 默认 true：自动采集 console.log/info/warn/error/debug，包括已有桥接和业务输出。 */
   captureConsole?: boolean;

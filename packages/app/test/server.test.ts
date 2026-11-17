@@ -300,6 +300,56 @@ describe("日志服务的公开 HTTP/SSE 契约", () => {
   });
 });
 
+describe("设备目录", () => {
+  it("相同 GAID 的多次采集归入同一设备，不按页面会话新增选项", () => {
+    const store = new LogStore();
+    store.add([event({ deviceId: "gaid-a", sessionId: "first", deviceName: "SM-A156U" })]);
+    store.add([event({ deviceId: "gaid-a", sessionId: "reopened", deviceName: "SM-A156U" })]);
+
+    expect(store.clients()).toEqual([expect.objectContaining({
+      deviceId: "gaid-a", deviceName: "SM-A156U", sessionId: "reopened", logCount: 2,
+    })]);
+  });
+
+  it("只给同型号的不同设备编号，跨应用复用且不随最近上报排序变化", () => {
+    let now = 1000;
+    const store = new LogStore({ now: () => now });
+    store.add([event({ deviceId: "gaid-a", deviceName: "SM-A156U" })]);
+    now++;
+    store.add([event({ deviceId: "gaid-b", deviceName: "SM-A156U" })]);
+    now++;
+    store.add([
+      event({ appId: "18", deviceId: "gaid-a", deviceName: "SM-A156U" }),
+      event({ environment: "dev", deviceId: "gaid-b", deviceName: "SM-A156U" }),
+      event({ deviceId: "gaid-c", deviceName: "moto g24" }),
+    ]);
+    const names = () => store.clients().map(({ key, deviceName }) => [key, deviceName]).sort();
+    const initialNames = names();
+    expect(store.clients().filter(({ deviceId }) => deviceId === "gaid-a"))
+      .toEqual([expect.objectContaining({ deviceName: "SM-A156U-1" }), expect.objectContaining({ deviceName: "SM-A156U-1" })]);
+    expect(store.clients().filter(({ deviceId }) => deviceId === "gaid-b"))
+      .toEqual([expect.objectContaining({ deviceName: "SM-A156U-2" }), expect.objectContaining({ deviceName: "SM-A156U-2" })]);
+    expect(store.clients().find(({ deviceId }) => deviceId === "gaid-c")?.deviceName).toBe("moto g24");
+
+    now++;
+    store.add([event({ deviceId: "gaid-a", deviceName: "SM-A156U" })]);
+    expect(store.clients()[0]?.deviceId).toBe("gaid-a");
+    expect(names()).toEqual(initialNames);
+    now++;
+    store.add([event({ deviceId: "gaid-d", deviceName: "SM-A156U" })]);
+    expect(store.clients().find(({ deviceId }) => deviceId === "gaid-d")?.deviceName).toBe("SM-A156U-3");
+  });
+
+  it("相同设备在不同应用上报时不被误当成同型号的多台手机", () => {
+    const store = new LogStore();
+    store.add([
+      event({ appId: "18", deviceId: "gaid-a", deviceName: "SM-A156U" }),
+      event({ appId: "26", deviceId: "gaid-a", deviceName: "SM-A156U" }),
+    ]);
+    expect(store.clients().map(({ deviceName }) => deviceName)).toEqual(["SM-A156U", "SM-A156U"]);
+  });
+});
+
 describe("12 小时与内存淘汰规则", () => {
   it("以服务端接收时间过期，不受手机时钟影响，达到 12 小时清理", () => {
     let now = 100;

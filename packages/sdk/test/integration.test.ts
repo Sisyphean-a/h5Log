@@ -53,6 +53,38 @@ it("SDK 允许的上下文边界可被真实服务端接受，保留原始测试
   }
 });
 
+it("稳定设备标识贯通真实上传与工作台目录，重新采集归并且同型号按设备编号", async () => {
+  const app = createLogServer();
+  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/api/logs`;
+  try {
+    const sessions = [];
+    for (const deviceId of ["gaid-phone-a", "gaid-phone-a", "gaid-phone-b", "gaid-phone-c"]) {
+      const logger = createLogger({
+        enabled: true, appId: "26", environment: "test", endpoint,
+        deviceId, deviceName: "SM-A156U", captureConsole: false,
+      });
+      instances.push(logger);
+      sessions.push(logger.context.sessionId);
+      logger.record("custom", "info", "device-identity-probe");
+      await logger.flush();
+      expect(logger.getStatus()).toMatchObject({ sent: 1, lastError: null });
+      logger.stop();
+    }
+    const result = (await (await fetch(endpoint)).json()) as LogPage;
+    expect(result.logs).toHaveLength(4);
+    expect(new Set(sessions).size).toBe(4);
+    expect(result.clients).toHaveLength(3);
+    expect(result.clients).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: "gaid-phone-a", deviceName: "SM-A156U-1", logCount: 2 }),
+      expect.objectContaining({ deviceId: "gaid-phone-b", deviceName: "SM-A156U-2", logCount: 1 }),
+      expect.objectContaining({ deviceId: "gaid-phone-c", deviceName: "SM-A156U-3", logCount: 1 }),
+    ]));
+  } finally {
+    await app.close();
+  }
+});
+
 it("SDK 原生压缩通过真实 HTTP 服务解压，查询返回相同正文且重试不重复", async () => {
   vi.stubGlobal("CompressionStream", NativeCompressionStream);
   const fetchSpy = vi.spyOn(globalThis, "fetch");

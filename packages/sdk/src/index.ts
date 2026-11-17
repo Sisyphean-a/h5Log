@@ -86,7 +86,7 @@ export function createLogger(options: LoggerOptions): Logger {
   const context: Readonly<LogContext> = Object.freeze({
     appId: options.appId,
     environment: options.environment ?? "test",
-    deviceId: active ? deviceId(options.appId) : "",
+    deviceId: active ? (options.deviceId ?? deviceId(options.appId)) : "",
     sessionId: active ? randomId() : "",
     deviceName: options.deviceName ?? "",
     userAgent: active ? navigator.userAgent : "",
