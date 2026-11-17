@@ -96,6 +96,22 @@ function log(source: StoredLog["source"], args: JsonValue[]): StoredLog {
   };
 }
 
+it("详情页面地址完整展示且不省略，缺少设备名称时仍显示设备标识", async () => {
+  const item = log("console", ["普通输出"]);
+  item.pageUrl = `https://test.example/very-long-path?token=${"abcdef".repeat(80)}`;
+  const wrapper = mount(LogDetailPanel, { props: { detail: { log: item, related: [] } } });
+  try {
+    const page = wrapper.findAll(".meta dd").at(-1)!;
+    expect(page.text()).toBe(item.pageUrl);
+    expect(page.classes()).not.toContain("ellipsis");
+    await wrapper.setProps({ detail: { log: { ...item, deviceName: "", pageUrl: "" }, related: [] } });
+    expect(wrapper.findAll(".meta dd")[1]!.text()).toBe("demo / test · device-a");
+    expect(page.text()).toBe("—");
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it("详情面板只拆分接口对象，保留附加输出与原始复制数据", async () => {
   const item = log("http", [{ phase: "request", requestId: "request-a", method: "POST", url: "/api/orders", body: { id: 1 } }, "附加输出"]);
   const related = [log("http", [{ phase: "response", status: 200 }])];
@@ -105,7 +121,8 @@ it("详情面板只拆分接口对象，保留附加输出与原始复制数据"
   const wrapper = mount(LogDetailPanel, { props: { detail: { log: item, related } } });
   try {
     expect(wrapper.findComponent(HttpDetail).exists()).toBe(true);
-    expect(wrapper.findAll(".meta dt").map((item) => item.text())).toEqual(["应用", "设备", "页面"]);
+    expect(wrapper.findAll(".meta dt").map((item) => item.text())).toEqual(["接收时间", "应用设备", "页面"]);
+    expect(wrapper.findAll(".meta dd")[1]!.text()).toBe("demo / test · 测试设备");
     expect(wrapper.find('[data-http-section="args"]').text()).toContain("附加输出");
     await wrapper.find(".detail-actions button").trigger("click");
     expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual({ log: item, related });

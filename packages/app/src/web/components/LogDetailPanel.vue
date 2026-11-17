@@ -49,12 +49,10 @@ function copyJson(): void {
       <dl class="meta">
         <dt>接收时间</dt>
         <dd>{{ formatDateTime(log.receivedAt) }}</dd>
-        <dt>应用</dt>
-        <dd>{{ log.appId }} / {{ log.environment }}</dd>
-        <dt>设备</dt>
-        <dd>{{ log.deviceName || log.deviceId }}</dd>
+        <dt>应用设备</dt>
+        <dd>{{ log.appId }} / {{ log.environment }} · {{ log.deviceName || log.deviceId }}</dd>
         <dt>页面</dt>
-        <dd class="mono ellipsis" :title="log.pageUrl">{{ log.pageUrl || "—" }}</dd>
+        <dd class="mono">{{ log.pageUrl || "—" }}</dd>
       </dl>
 
       <HttpDetail v-if="payload" :payload="payload" />
