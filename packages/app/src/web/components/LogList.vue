@@ -24,7 +24,10 @@ const props = defineProps<{
   selectedId: number | undefined;
   query?: string;
 }>();
-const emit = defineEmits<{ select: [number] }>();
+const emit = defineEmits<{
+  select: [number];
+  contextmenu: [log: StoredLog, event: MouseEvent];
+}>();
 
 const listEl = ref<HTMLElement>();
 const linkPaths = ref<string[]>([]);
@@ -184,6 +187,7 @@ onBeforeUnmount(() => {
           },
         ]"
         @click="emit('select', log.id)"
+        @contextmenu.prevent="emit('contextmenu', log, $event)"
       >
         <span class="log-time" title="发生时间（设备时间）">{{ formatTime(log.timestamp) }}</span>
         <span

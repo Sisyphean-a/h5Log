@@ -3,7 +3,7 @@ import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { NSelect } from "naive-ui";
+import { NDropdown, NSelect } from "naive-ui";
 import type { LogClient, LogPage, StoredLog } from "@h5-log/sdk";
 import App from "../src/web/App.vue";
 import { ACCESS_KEY, clearAccessKey, readAccessKey, saveAccessKey } from "../src/web/access.js";
@@ -750,6 +750,137 @@ it("页面进入后退缓存时暂存工作台，返回后读取新日志并忽�
     expect(wrapper.text()).not.toContain("暂存前的日志");
     expect(wrapper.text()).not.toContain("旧连接的迟到日志");
     expect(wrapper.findAll(".log-row")).toHaveLength(1);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+async function mountCopyScenario(logs: StoredLog[], pendingDetail = false) {
+  const writeText = vi.fn(async (_text: string) => undefined);
+  vi.stubGlobal("navigator", new Proxy(navigator, {
+    get: (target, key) => key === "clipboard" ? { writeText } : Reflect.get(target, key, target),
+  }));
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    const id = /^\.\/api\/logs\/(\d+)$/.exec(url)?.[1];
+    if (id && pendingDetail) return new Promise<never>(() => {});
+    return { ok: true, json: async () => id
+      ? { log: logs.find((item) => item.id === Number(id)), related: [] }
+      : pageBody(logs) };
+  }));
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(logs.length));
+  return { wrapper, writeText };
+}
+
+it("右键阻止原生菜单，先选中并展示详情；后台请求未完成也能显示埋点菜单和复制", async () => {
+  const { wrapper, writeText } = await mountCopyScenario([
+    log(1, "之前的条目"), log(2, "[埋点] 复贷可申请首页展示 | home_page_view_repeat_h5"),
+  ], true);
+  try {
+    await wrapper.find('[data-log-id="1"]').trigger("click");
+    const row = wrapper.find('[data-log-id="2"]');
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 180 });
+    row.element.dispatchEvent(event);
+    await flushPromises();
+    expect(event.defaultPrevented).toBe(true);
+    expect(row.classes()).toContain("selected");
+    expect(wrapper.find("#log-detail").text()).toContain("home_page_view_repeat_h5");
+    const menu = wrapper.findComponent(NDropdown);
+    expect(menu.props("show")).toBe(true);
+    expect([menu.props("x"), menu.props("y")]).toEqual([120, 180]);
+    await vi.waitFor(() => expect(document.body.textContent).toContain("复制原始埋点"));
+    const option = [...document.querySelectorAll(".n-dropdown-option-body")].find((item) => item.textContent?.includes("复制原始埋点"));
+    expect(option).toBeTruthy();
+    (option as HTMLElement).click();
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("home_page_view_repeat");
+    expect(menu.props("show")).toBe(false);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it.each(["request", "response"])("右键 %s 只显示对应接口菜单并复制当前条目的正文", async (phase) => {
+  const entry: StoredLog = {
+    ...log(2, ""), source: "http",
+    args: [{ phase, method: "POST", url: "/api/items", headers: { token: "test" }, body: { phase } }],
+  };
+  const { wrapper, writeText } = await mountCopyScenario([log(1, "旧条目"), entry], true);
+  try {
+    await wrapper.find('[data-log-id="1"]').trigger("click");
+    await wrapper.find('[data-log-id="2"]').trigger("contextmenu");
+    const menu = wrapper.findComponent(NDropdown);
+    const label = phase === "request" ? "请求" : "响应";
+    expect((menu.props("options") as { label: string }[]).map((item) => item.label))
+      .toEqual([`复制${label}头`, `复制${label}体`, ...(phase === "request" ? ["复制 cURL"] : [])]);
+    const option = [...document.querySelectorAll(".n-dropdown-option-body")].find((item) => item.textContent?.includes(`复制${label}体`));
+    (option as HTMLElement).click();
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify({ phase }, null, 2));
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("快捷复制完整条目或原始埋点；输入框和未选中时不拦截，复制失败明确反馈", async () => {
+  const text = "完整日志".repeat(500);
+  const { wrapper, writeText } = await mountCopyScenario([log(1, text), log(2, "[埋点] 展示 | h5_home_view")]);
+  const copy = (target: EventTarget, metaKey = false) => {
+    const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: !metaKey, metaKey, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  try {
+    expect(copy(document).defaultPrevented).toBe(false);
+    await wrapper.find('[data-log-id="1"]').trigger("click");
+    expect(copy(document).defaultPrevented).toBe(true);
+    await flushPromises();
+    expect(writeText).toHaveBeenLastCalledWith(text);
+    await wrapper.find('[data-log-id="2"]').trigger("click");
+    copy(document, true);
+    await flushPromises();
+    expect(writeText).toHaveBeenLastCalledWith("home_view");
+    const count = writeText.mock.calls.length;
+    expect(copy(wrapper.find("input").element).defaultPrevented).toBe(false);
+    expect(writeText).toHaveBeenCalledTimes(count);
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "true");
+    document.body.append(editable);
+    expect(copy(editable).defaultPrevented).toBe(false);
+    expect(writeText).toHaveBeenCalledTimes(count);
+    writeText.mockRejectedValueOnce(new Error("权限被拒绝"));
+    copy(document);
+    await flushPromises();
+    expect(wrapper.find(".toast").text()).toContain("复制失败：权限被拒绝");
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("菜单在 Escape、滚动、外部点击和切换条目时关闭，Escape 不关闭当前详情", async () => {
+  const { wrapper } = await mountCopyScenario([log(1, "第一条"), log(2, "第二条")]);
+  const menu = wrapper.findComponent(NDropdown);
+  const open = () => wrapper.find('[data-log-id="1"]').trigger("contextmenu");
+  try {
+    await open();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(menu.props("show")).toBe(false);
+    expect(wrapper.find("#log-detail").exists()).toBe(true);
+    await open();
+    document.dispatchEvent(new Event("scroll"));
+    await flushPromises();
+    expect(menu.props("show")).toBe(false);
+    await open();
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    document.body.click();
+    await flushPromises();
+    expect(menu.props("show")).toBe(false);
+    await open();
+    await wrapper.find('[data-log-id="2"]').trigger("click");
+    expect(menu.props("show")).toBe(false);
   } finally {
     wrapper.unmount();
   }

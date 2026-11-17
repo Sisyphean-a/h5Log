@@ -2,18 +2,20 @@
 import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   NConfigProvider,
+  NDropdown,
   NInput,
   NSelect,
   type GlobalThemeOverrides,
   type SelectRenderLabel,
 } from "naive-ui";
-import type { LogClient } from "@h5-log/sdk";
+import type { LogClient, StoredLog } from "@h5-log/sdk";
 import { createWorkbench } from "./workbench.js";
 import { createLogMatcher } from "../log-filter.js";
 import { parseLogRoute } from "../log-route.js";
 import { createLocalHistory } from "./history.js";
 import { isAccessKey, readAccessKey } from "./access.js";
 import { clientLabel, relativeTime } from "./format.js";
+import { defaultLogCopyText, logCopyActions, type LogCopyAction } from "./log-copy.js";
 import AccessGate from "./components/AccessGate.vue";
 import LogList from "./components/LogList.vue";
 import LogDetailPanel from "./components/LogDetailPanel.vue";
@@ -124,6 +126,13 @@ let resizeStart: { pointerId: number; x: number; width: number } | undefined;
 let layoutDisposed = false;
 const toast = ref("");
 const statusOpen = ref(false);
+const contextMenu = ref<{
+  id: number;
+  eventId: string;
+  x: number;
+  y: number;
+  actions: LogCopyAction[];
+}>();
 const CLIENT_HIDE_KEY = "h5-log:hidden-clients-before";
 const hiddenBefore = ref(readHiddenBefore());
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -288,8 +297,53 @@ watch(
   },
 );
 
+function closeContextMenu(): void {
+  contextMenu.value = undefined;
+}
+
 async function openDetail(id: number): Promise<void> {
+  closeContextMenu();
   await workbench.openDetail(id);
+}
+
+function openContextMenu(log: StoredLog, event: MouseEvent): void {
+  if (accessState.value !== "open") return;
+  (event.currentTarget as HTMLElement | null)?.focus({ preventScroll: true });
+  // Flow: 复用左键的同步选中，再解析当前条目；后台详情请求不阻塞菜单。
+  void openDetail(log.id);
+  contextMenu.value = {
+    id: log.id,
+    eventId: log.eventId,
+    x: event.clientX,
+    y: event.clientY,
+    actions: logCopyActions(log),
+  };
+}
+
+watch(
+  () => [state.selectedId, state.detail?.log.eventId, visibleLogs.value] as const,
+  () => {
+    const menu = contextMenu.value;
+    if (menu && (state.selectedId !== menu.id || state.detail?.log.eventId !== menu.eventId ||
+      !visibleLogs.value.some((log) => log.id === menu.id && log.eventId === menu.eventId))) {
+      closeContextMenu();
+    }
+  },
+);
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("已复制");
+  } catch (error) {
+    showToast(`复制失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function selectCopyAction(key: string): void {
+  const action = contextMenu.value?.actions.find((item) => item.key === key);
+  closeContextMenu();
+  if (action?.text !== undefined && !action.disabled) void copyText(action.text);
 }
 
 async function openService(): Promise<void> {
@@ -300,16 +354,28 @@ async function openService(): Promise<void> {
 function onKeydown(event: KeyboardEvent): void {
   if (accessState.value !== "open") return;
   const target = event.target as HTMLElement | null;
-  const typing =
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target?.isContentEditable === true;
+  const typing = target instanceof HTMLElement && (
+    target.matches("input, textarea") || target.isContentEditable ||
+    !!target.closest('[contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]')
+  );
   if (event.key === "/" && !typing) {
     event.preventDefault();
     searchRef.value?.focus();
   }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c" && !typing) {
+    const log = state.detail?.log;
+    if (log && state.selectedId === log.id) {
+      event.preventDefault();
+      closeContextMenu();
+      void copyText(defaultLogCopyText(log));
+    }
+  }
   if (event.key === "Escape") {
-    workbench.closeDetail();
+    if (contextMenu.value) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeContextMenu();
+    } else workbench.closeDetail();
   }
 }
 
@@ -445,7 +511,10 @@ onMounted(() => {
   updateBodyWidth();
   window.addEventListener("resize", updateBodyWidth);
   void checkAccess();
-  document.addEventListener("keydown", onKeydown);
+  document.addEventListener("keydown", onKeydown, true);
+  document.addEventListener("scroll", closeContextMenu, true);
+  window.addEventListener("resize", closeContextMenu);
+  window.addEventListener("blur", closeContextMenu);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("pagehide", onPageHide);
   window.addEventListener("online", onOnline);
@@ -455,7 +524,10 @@ onBeforeUnmount(() => {
   layoutDisposed = true;
   stopResize();
   window.removeEventListener("resize", updateBodyWidth);
-  document.removeEventListener("keydown", onKeydown);
+  document.removeEventListener("keydown", onKeydown, true);
+  document.removeEventListener("scroll", closeContextMenu, true);
+  window.removeEventListener("resize", closeContextMenu);
+  window.removeEventListener("blur", closeContextMenu);
   window.removeEventListener("pageshow", onPageShow);
   window.removeEventListener("pagehide", onPageHide);
   window.removeEventListener("online", onOnline);
@@ -473,7 +545,7 @@ onBeforeUnmount(() => {
       <header
         class="workbench-header"
         aria-label="日志工具栏"
-        :inert="accessState !== 'open' ? '' : undefined"
+        :inert="accessState !== 'open'"
         :aria-hidden="accessState !== 'open'"
       >
         <div class="toolbar">
@@ -618,7 +690,7 @@ onBeforeUnmount(() => {
 
       <div
         class="main"
-        :inert="accessState !== 'open' ? '' : undefined"
+        :inert="accessState !== 'open'"
         :aria-hidden="accessState !== 'open'"
       >
         <div ref="bodyEl" class="body" :class="{ 'is-resizing': resizing }" :style="{ '--detail-width': `${detailWidth}px`, '--resizer-width': `${RESIZER_WIDTH}px` }">
@@ -664,6 +736,7 @@ onBeforeUnmount(() => {
               :selected-id="state.selectedId"
               :query="searchInput"
               @select="openDetail"
+              @contextmenu="openContextMenu"
             />
           </main>
 
@@ -696,6 +769,19 @@ onBeforeUnmount(() => {
           />
         </div>
       </div>
+
+      <NDropdown
+        trigger="manual"
+        placement="bottom-start"
+        :show="!!contextMenu"
+        :x="contextMenu?.x ?? 0"
+        :y="contextMenu?.y ?? 0"
+        :options="contextMenu?.actions ?? []"
+        :keyboard="true"
+        @select="selectCopyAction"
+        @clickoutside="closeContextMenu"
+        @update:show="(show: boolean) => { if (!show) closeContextMenu(); }"
+      />
 
       <div v-if="toast" class="toast">{{ toast }}</div>
 
