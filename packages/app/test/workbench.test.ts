@@ -102,6 +102,21 @@ afterEach(() => {
 });
 
 describe("工作台状态", () => {
+  it("同设备筛选保留预览窗口，切换设备立即清除旧范围", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response(page([log(1)], 1)))
+      .mockImplementation(() => new Promise<Response>(() => {}));
+    workbench = createWorkbench({ fetchImpl });
+    workbench.state.filter.clientKey = "client-a";
+    await workbench.load();
+    workbench.setFilter({ search: "entry" });
+    expect(workbench.state.loading).toBe(true);
+    expect(workbench.state.logs.map((item) => item.id)).toEqual([1]);
+    workbench.setScope({ clientKey: "client-b" });
+    expect(workbench.state.logs).toEqual([]);
+    expect(workbench.state.filter.clientKey).toBe("client-b");
+  });
+
   it("无关的全局淘汰不触发当前设备的列表或索引查询", async () => {
     const fetchImpl = vi.fn();
     workbench = createWorkbench({ fetchImpl });

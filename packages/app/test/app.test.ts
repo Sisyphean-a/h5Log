@@ -378,6 +378,71 @@ it("默认盯住最近上报的客户端，输入关键词后新日志只显示�
   wrapper.unmount();
 });
 
+it("输入和替换关键词立即预览当前页并高亮，不等待防抖或网络", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => pageBody([
+    log(1, "启动完成"), log(2, "submitTrack 订单已提交"),
+  ]) }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2));
+    await flushPromises();
+    vi.useFakeTimers();
+    const requests = fetchMock.mock.calls.length;
+    const input = wrapper.find('input[placeholder*="搜索"]');
+    await input.setValue("submitTrack");
+    expect(wrapper.findAll(".log-row")).toHaveLength(1);
+    expect(wrapper.find(".search-hit").text()).toBe("submitTrack");
+    expect(fetchMock).toHaveBeenCalledTimes(requests);
+    await input.setValue("启动");
+    expect(wrapper.findAll(".log-row")).toHaveLength(1);
+    expect(wrapper.find(".log-row").text()).toContain("启动完成");
+    await input.setValue("");
+    expect(wrapper.findAll(".log-row")).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(requests);
+  } finally {
+    wrapper.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("搜索慢网时保留命中行，快速替换关键词忽略旧响应，失败也不清空结果", async () => {
+  const entries = [log(1, "submitTrack 订单已提交"), log(2, "启动完成")];
+  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const search = new URL(String(input), "http://localhost").searchParams.get("search");
+    if (search) return new Promise((resolve, reject) => pending.set(search, { resolve, reject }));
+    return Promise.resolve({ ok: true, json: async () => pageBody(entries) });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2));
+    await flushPromises();
+    vi.useFakeTimers();
+    const input = wrapper.find('input[placeholder*="搜索"]');
+    await input.setValue("submitTrack");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(pending.has("submitTrack")).toBe(true);
+    expect(wrapper.findAll(".log-row")).toHaveLength(1);
+    expect(wrapper.find(".log-row").text()).toContain("submitTrack");
+    await input.setValue("启动");
+    await vi.advanceTimersByTimeAsync(250);
+    pending.get("submitTrack")!.resolve({ ok: true, json: async () => pageBody([log(3, "旧响应")]) });
+    await flushPromises();
+    expect(wrapper.find(".log-row").text()).toContain("启动完成");
+    pending.get("启动")!.reject(new Error("网络不可用"));
+    await flushPromises();
+    expect(wrapper.find(".log-row").text()).toContain("启动完成");
+    expect(wrapper.text()).toContain("网络不可用");
+  } finally {
+    wrapper.unmount();
+    vi.useRealTimers();
+  }
+});
+
 it("达到 200 行上限后仍跟随最新日志，暂停时不滚动，恢复后立即到底", async () => {
   const entries = Array.from({ length: 200 }, (_, index) => log(index + 1, `记录-${index + 1}`));
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => pageBody(entries) })));

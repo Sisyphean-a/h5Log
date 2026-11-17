@@ -9,6 +9,7 @@ import {
 } from "naive-ui";
 import type { LogClient } from "@h5-log/sdk";
 import { createWorkbench } from "./workbench.js";
+import { createLogMatcher } from "../log-filter.js";
 import { createLocalHistory } from "./history.js";
 import { isAccessKey, readAccessKey } from "./access.js";
 import { clientLabel, relativeTime } from "./format.js";
@@ -165,7 +166,10 @@ const connectionText = computed(() =>
       : "已断开",
 );
 // Rule: 关键词在本地也立即过滤一次，不必等服务端往返；服务端同样按关键词收窄窗口。
-const visibleLogs = computed(() => state.logs.filter((log) => workbench.matches(log)));
+const previewMatcher = computed(() => createLogMatcher({ ...state.filter, search: searchInput.value }));
+const visibleLogs = computed(() => state.logs.filter(
+  (log) => log.id > state.clearAfter && previewMatcher.value.matches(log),
+));
 const viewCleared = computed(() => state.clearAfter > 0 && !state.loading);
 const canOlder = computed(() =>
   !state.loading && state.logs.length > 0 && (state.serverHasMore || state.localHasMore),
@@ -640,7 +644,7 @@ onBeforeUnmount(() => {
               v-else
               :logs="visibleLogs"
               :selected-id="state.selectedId"
-              :query="state.filter.search"
+              :query="searchInput"
               @select="openDetail"
             />
           </main>

@@ -1,4 +1,4 @@
-import { computed, reactive } from "vue";
+import { computed, reactive, shallowRef } from "vue";
 import type {
   ClientUpdate,
   LogClient,
@@ -69,7 +69,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   const fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
   const history = options.history;
   const state: WorkbenchState = reactive({
-    logs: [],
+    // Rule: 日志正文是只读快照，只跟踪窗口替换，避免搜索遍历深层响应式代理。
+    logs: shallowRef<StoredLog[]>([]),
     clients: [],
     sessions: [],
     filter: emptyFilter(),
@@ -365,8 +366,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     await load();
   }
 
-  function resetView(): void {
-    state.logs = [];
+  function resetView(keepLogs = false): void {
+    if (!keepLogs) state.logs = [];
     state.clearAfter = 0;
     state.selectedId = undefined;
     state.localMode = false;
@@ -388,7 +389,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       state.streamReady = false;
       connect();
     }
-    resetView();
+    // Rule: 同设备筛选保留当前页供即时预览；切换设备才清空旧范围。
+    resetView(previousScope === streamQuery());
   }
 
   function setScope(patch: Partial<FilterState>): void {
