@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { JsonValue, StoredLog } from "@h5-log/sdk";
-import { defaultLogCopyText, logCopyActions } from "../src/web/log-copy.js";
+import { defaultLogCopy, logCopyActions } from "../src/web/log-copy.js";
 
 function log(source: StoredLog["source"], ...args: JsonValue[]): StoredLog {
   return {
@@ -14,8 +14,8 @@ it("普通复制保留完整正文、对象和附加输出，而不是列表摘�
   const text = "长日志".repeat(500);
   const entry = log("console", text, { a: 1 }, false, null);
   expect(logCopyActions(entry).map((item) => item.label)).toEqual(["复制"]);
-  expect(defaultLogCopyText(entry)).toBe(`${text} {\n  "a": 1\n} false null`);
-  expect(logCopyActions(entry)[0]!.text).toBe(defaultLogCopyText(entry));
+  expect(defaultLogCopy(entry)).toEqual({ label: "日志内容", text: `${text} {\n  "a": 1\n} false null` });
+  expect(logCopyActions(entry)[0]!.text).toBe(defaultLogCopy(entry).text);
 });
 
 it.each([
@@ -29,13 +29,13 @@ it.each([
     ["复制埋点", event],
     ["复制原始埋点", original],
   ]);
-  expect(defaultLogCopyText(entry)).toBe(original);
+  expect(defaultLogCopy(entry)).toEqual({ text: original, label: "原始埋点" });
 });
 
 it.each(["home_page", "home_h5_page", "h5_home_h5", "h5_", "_h5"])("%s 不猜测原始埋点", (event) => {
   const entry = log("console", `[埋点] 展示 | ${event}`);
   expect(logCopyActions(entry).map((item) => item.label)).toEqual(["复制", "复制埋点"]);
-  expect(defaultLogCopyText(entry)).toBe(entry.args[0]);
+  expect(defaultLogCopy(entry).text).toBe(entry.args[0]);
 });
 
 it.each(["[埋点] 展示", "展示 | home_h5", "[其他] 展示 | home_h5", "[埋点] 展示 | ", "[埋点] 展示 | home_h5 | more"])("不误识别普通文本 %s", (text) => {
@@ -45,7 +45,7 @@ it.each(["[埋点] 展示", "展示 | home_h5", "[其他] 展示 | home_h5", "[�
 it("只有控制台来源参与埋点识别", () => {
   const entry = log("custom", "[埋点] 展示 | home_h5");
   expect(logCopyActions(entry)).toHaveLength(1);
-  expect(defaultLogCopyText(entry)).toBe(entry.args[0]);
+  expect(defaultLogCopy(entry).text).toBe(entry.args[0]);
 });
 
 it("请求提供头、体和可运行的 cURL，保留查询参数并转义单引号", () => {
@@ -59,7 +59,7 @@ it("请求提供头、体和可运行的 cURL，保留查询参数并转义单�
   expect(actions[0]!.text).toBe(JSON.stringify((entry.args[0] as Record<string, JsonValue>).headers, null, 2));
   expect(actions[1]!.text).toBe('{\n  "name": "O\'Reilly"\n}');
   expect(actions[2]!.text).toBe(`curl -X 'POST' 'https://h5.test/api/items?tag=a&tag=b' -H 'Content-Type: application/json' -H 'X-Token: it'"'"'s secret' -H 'X-Multi: a' -H 'X-Multi: b' --data-raw '{\n  "name": "O'"'"'Reilly"\n}'`);
-  expect(defaultLogCopyText(entry)).toContain('"phase": "request"');
+  expect(defaultLogCopy(entry).text).toContain('"phase": "request"');
 });
 
 it.each(["response", "error"])("%s 仅提供响应头和响应体，不借用关联请求的数据", (phase) => {

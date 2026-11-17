@@ -795,6 +795,7 @@ it("右键阻止原生菜单，先选中并展示详情；后台请求未完成�
     (option as HTMLElement).click();
     await flushPromises();
     expect(writeText).toHaveBeenCalledWith("home_page_view_repeat");
+    expect(wrapper.find(".toast").text()).toBe("已复制原始埋点：home_page_view_repeat");
     expect(menu.props("show")).toBe(false);
   } finally {
     wrapper.unmount();
@@ -818,6 +819,7 @@ it.each(["request", "response"])("右键 %s 只显示对应接口菜单并复制
     (option as HTMLElement).click();
     await flushPromises();
     expect(writeText).toHaveBeenCalledWith(JSON.stringify({ phase }, null, 2));
+    expect(wrapper.find(".toast").text()).toBe(`已复制${label}体：{ "phase": "${phase}" }`);
   } finally {
     wrapper.unmount();
   }
@@ -834,13 +836,19 @@ it("快捷复制完整条目或原始埋点；输入框和未选中时不拦截�
   try {
     expect(copy(document).defaultPrevented).toBe(false);
     await wrapper.find('[data-log-id="1"]').trigger("click");
-    expect(copy(document).defaultPrevented).toBe(true);
+    expect(copy(document).defaultPrevented).toBe(false);
+    expect(copy(wrapper.find('[data-log-id="1"]').element).defaultPrevented).toBe(true);
     await flushPromises();
     expect(writeText).toHaveBeenLastCalledWith(text);
+    const toast = wrapper.find(".toast").text();
+    expect(toast).toContain("已复制日志内容：完整日志");
+    expect(toast.endsWith("…")).toBe(true);
+    expect(toast.length).toBeLessThan(120);
     await wrapper.find('[data-log-id="2"]').trigger("click");
-    copy(document, true);
+    copy(wrapper.find('[data-log-id="2"]').element, true);
     await flushPromises();
     expect(writeText).toHaveBeenLastCalledWith("home_view");
+    expect(wrapper.find(".toast").text()).toBe("已复制原始埋点：home_view");
     const count = writeText.mock.calls.length;
     expect(copy(wrapper.find("input").element).defaultPrevented).toBe(false);
     expect(writeText).toHaveBeenCalledTimes(count);
@@ -850,9 +858,69 @@ it("快捷复制完整条目或原始埋点；输入框和未选中时不拦截�
     expect(copy(editable).defaultPrevented).toBe(false);
     expect(writeText).toHaveBeenCalledTimes(count);
     writeText.mockRejectedValueOnce(new Error("权限被拒绝"));
-    copy(document);
+    copy(wrapper.find('[data-log-id="2"]').element);
     await flushPromises();
     expect(wrapper.find(".toast").text()).toContain("复制失败：权限被拒绝");
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("详情选文优先原生复制，即使焦点留在列表；列表外也不触发埋点快捷复制", async () => {
+  const { wrapper, writeText } = await mountCopyScenario([log(1, "[埋点] 首页子产品点击 | h5_home_sub_product_click")]);
+  const selection = window.getSelection()!;
+  const copy = (target: EventTarget) => {
+    const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  try {
+    const row = wrapper.find('[data-log-id="1"]');
+    await row.trigger("click");
+    row.element.focus();
+    const content = wrapper.find("#log-detail .block").element;
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(selection.toString()).toContain("首页子产品点击");
+    expect(copy(row.element).defaultPrevented).toBe(false);
+    expect(copy(content).defaultPrevented).toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+    for (const target of [content, wrapper.find(".workbench-header button").element, document.body]) {
+      expect(copy(target).defaultPrevented).toBe(false);
+    }
+    expect(writeText).not.toHaveBeenCalled();
+    const crossPaneRange = document.createRange();
+    crossPaneRange.setStart(row.element, 0);
+    crossPaneRange.setEnd(content, content.childNodes.length);
+    selection.addRange(crossPaneRange);
+    expect(copy(row.element).defaultPrevented).toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+    expect(copy(row.element).defaultPrevented).toBe(true);
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("home_sub_product_click");
+  } finally {
+    selection.removeAllRanges();
+    wrapper.unmount();
+  }
+});
+
+it("详情 JSON 复制显示内容预览，失败时不伪报成功", async () => {
+  const { wrapper, writeText } = await mountCopyScenario([log(1, "日志正文")]);
+  try {
+    await wrapper.find('[data-log-id="1"]').trigger("click");
+    const button = wrapper.find("#log-detail .detail-actions button");
+    await button.trigger("click");
+    await flushPromises();
+    expect(writeText.mock.calls[0]![0]).toContain("日志正文");
+    expect(wrapper.find(".toast").text()).toContain('已复制详情 JSON：{ "log":');
+    writeText.mockRejectedValueOnce(new Error("剪贴板不可用"));
+    await button.trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".toast").text()).toBe("复制失败：剪贴板不可用");
   } finally {
     wrapper.unmount();
   }

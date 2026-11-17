@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import type { JsonValue, StoredLog } from "@h5-log/sdk";
 import HttpDetail from "../src/web/components/HttpDetail.vue";
@@ -115,9 +115,6 @@ it("详情页面地址完整展示且不省略，缺少设备名称时仍显示�
 it("详情面板只拆分接口对象，保留附加输出与原始复制数据", async () => {
   const item = log("http", [{ phase: "request", requestId: "request-a", method: "POST", url: "/api/orders", body: { id: 1 } }, "附加输出"]);
   const related = [log("http", [{ phase: "response", status: 200 }])];
-  const writeText = vi.fn().mockResolvedValue(undefined);
-  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   const wrapper = mount(LogDetailPanel, { props: { detail: { log: item, related } } });
   try {
     expect(wrapper.findComponent(HttpDetail).exists()).toBe(true);
@@ -125,13 +122,11 @@ it("详情面板只拆分接口对象，保留附加输出与原始复制数据"
     expect(wrapper.findAll(".meta dd")[1]!.text()).toBe("demo / test · 测试设备");
     expect(wrapper.find('[data-http-section="args"]').text()).toContain("附加输出");
     await wrapper.find(".detail-actions button").trigger("click");
-    expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual({ log: item, related });
+    expect(JSON.parse(wrapper.emitted("copy")![0]![0] as string)).toEqual({ log: item, related });
     await wrapper.setProps({ detail: { log: log("console", ["普通输出"]), related: [] } });
     expect(wrapper.findComponent(HttpDetail).exists()).toBe(false);
     expect(wrapper.find(".json").text()).toBe("普通输出");
   } finally {
     wrapper.unmount();
-    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
-    else Reflect.deleteProperty(navigator, "clipboard");
   }
 });

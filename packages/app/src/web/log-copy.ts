@@ -24,9 +24,13 @@ function trackingEvent(log: StoredLog): { event: string; original: string | unde
   return { event, original: original || undefined };
 }
 
-/** 完整正文不使用列表摘要，避免截断或丢失接口结构。 */
-export function defaultLogCopyText(log: StoredLog): string {
-  return trackingEvent(log)?.original ?? log.args.map(copyText).join(" ");
+/** 完整正文不使用列表摘要，复制标签与实际内容保持一致。 */
+export function defaultLogCopy(log: StoredLog): { text: string; label: string } {
+  const original = trackingEvent(log)?.original;
+  return {
+    text: original ?? log.args.map(copyText).join(" "),
+    label: original === undefined ? "日志内容" : "原始埋点",
+  };
 }
 
 function shellQuote(value: string): string {

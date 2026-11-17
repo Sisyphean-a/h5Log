@@ -15,17 +15,14 @@ import HttpDetail from "./HttpDetail.vue";
 const props = defineProps<{
   detail: LogDetail;
 }>();
-const emit = defineEmits<{ close: []; copy: [] }>();
+const emit = defineEmits<{ close: []; copy: [text: string] }>();
 
 const log = computed(() => props.detail.log);
 const payload = computed(() => httpPayload(log.value));
 const related = computed(() => props.detail.related);
 
 function copyJson(): void {
-  void navigator.clipboard
-    .writeText(jsonText({ log: log.value, related: related.value }))
-    .then(() => emit("copy"))
-    .catch(() => emit("copy"));
+  emit("copy", jsonText({ log: log.value, related: related.value }));
 }
 </script>
 

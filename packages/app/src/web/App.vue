@@ -15,7 +15,7 @@ import { parseLogRoute } from "../log-route.js";
 import { createLocalHistory } from "./history.js";
 import { isAccessKey, readAccessKey } from "./access.js";
 import { clientLabel, relativeTime } from "./format.js";
-import { defaultLogCopyText, logCopyActions, type LogCopyAction } from "./log-copy.js";
+import { defaultLogCopy, logCopyActions, type LogCopyAction } from "./log-copy.js";
 import AccessGate from "./components/AccessGate.vue";
 import LogList from "./components/LogList.vue";
 import LogDetailPanel from "./components/LogDetailPanel.vue";
@@ -331,10 +331,11 @@ watch(
   },
 );
 
-async function copyText(text: string): Promise<void> {
+async function copyText(text: string, label: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
-    showToast("已复制");
+    const preview = text.replace(/\s+/g, " ").trim();
+    showToast(`已复制${label}：${preview.length > 80 ? `${preview.slice(0, 80)}…` : preview || "（空文本）"}`);
   } catch (error) {
     showToast(`复制失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -343,7 +344,9 @@ async function copyText(text: string): Promise<void> {
 function selectCopyAction(key: string): void {
   const action = contextMenu.value?.actions.find((item) => item.key === key);
   closeContextMenu();
-  if (action?.text !== undefined && !action.disabled) void copyText(action.text);
+  if (action?.text !== undefined && !action.disabled) {
+    void copyText(action.text, action.key === "copy" ? "日志内容" : action.label.replace(/^复制\s*/, ""));
+  }
 }
 
 async function openService(): Promise<void> {
@@ -363,11 +366,17 @@ function onKeydown(event: KeyboardEvent): void {
     searchRef.value?.focus();
   }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c" && !typing) {
+    const list = listEl.value;
+    const selection = window.getSelection();
+    // Rule: 焦点和选文都必须属于列表，侧栏选文不能被当前选中日志覆盖。
+    const outsideSelection = selection && !selection.isCollapsed &&
+      (!list?.contains(selection.anchorNode) || !list.contains(selection.focusNode));
     const log = state.detail?.log;
-    if (log && state.selectedId === log.id) {
+    if (list?.contains(target) && !outsideSelection && log && state.selectedId === log.id) {
       event.preventDefault();
       closeContextMenu();
-      void copyText(defaultLogCopyText(log));
+      const copy = defaultLogCopy(log);
+      void copyText(copy.text, copy.label);
     }
   }
   if (event.key === "Escape") {
@@ -765,7 +774,7 @@ onBeforeUnmount(() => {
             id="log-detail"
             :detail="state.detail"
             @close="workbench.closeDetail()"
-            @copy="showToast('已复制详情')"
+            @copy="(text: string) => copyText(text, '详情 JSON')"
           />
         </div>
       </div>
