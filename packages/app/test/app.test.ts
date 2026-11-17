@@ -639,6 +639,23 @@ it("页面进入后退缓存时暂存工作台，返回后读取新日志并忽�
   }
 });
 
+it("检查已保存的登录状态时只显示加载提示，不闪现密钥表单", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => pageBody([]) }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", Stream);
+  const wrapper = mount(App, { attachTo: document.body });
+  try {
+    expect(wrapper.text()).toContain("正在检查登录状态");
+    expect(wrapper.find("#access-key").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("输入访问密钥");
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(wrapper.find(".access-gate").exists()).toBe(false));
+    expect(fetchMock).toHaveBeenCalled();
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 it("未解锁时蒙版挡住日志，输入正确密钥后写入 IndexedDB 并直接解锁", async () => {
   await clearAccessKey();
   const fetchMock = vi.fn(async () => ({

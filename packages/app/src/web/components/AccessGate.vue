@@ -91,7 +91,9 @@ onBeforeUnmount(() => clearTimeout(shakeTimer));
 
 <template>
   <div class="access-gate">
+    <p v-if="checking" class="access-loading" role="status">正在检查登录状态…</p>
     <section
+      v-else
       class="access-panel"
       :class="{ 'is-error': !!error, 'is-shaking': shaking }"
       role="dialog"
@@ -137,9 +139,6 @@ onBeforeUnmount(() => clearTimeout(shakeTimer));
         {{ error }}
       </p>
       <p v-else-if="notice" class="access-message access-notice" role="status">{{ notice }}</p>
-      <p v-else-if="checking" class="access-message access-notice" role="status">
-        正在检查登录状态…
-      </p>
     </section>
   </div>
 </template>

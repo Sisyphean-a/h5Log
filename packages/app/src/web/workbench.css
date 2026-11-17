@@ -873,6 +873,13 @@
   z-index: 0;
 }
 
+.access-loading {
+  position: relative;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .access-panel {
   position: relative;
   z-index: 1;
