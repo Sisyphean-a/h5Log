@@ -53,6 +53,8 @@ SDK 是独立分发的浏览器 ESM 包，保持单独打包，不随服务一�
 
 ## 接入 SDK 与排查停止上报
 
+Android 原生应用通过 HTTP 上报，见 [Android 原生 Kotlin 接入指南](docs/kotlin-android.md)。WebView 网页仍按 H5 项目接入。
+
 SDK 接入步骤见 [SDK 说明](packages/sdk/README.md)。接入其他 H5 项目时先打包：
 
 ```sh
