@@ -4,6 +4,7 @@ import { gzipSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import type { LogEvent, LogPage } from "@h5-log/sdk";
 import { createLogServer, LogStore } from "../src/server/index.js";
+import type { WorkbenchServiceStatus } from "../src/service-status.js";
 
 function event(extra: Partial<LogEvent> = {}): LogEvent {
   return {
@@ -75,6 +76,27 @@ async function subscriber() {
 }
 
 describe("日志服务的公开 HTTP/SSE 契约", () => {
+  it("工作台状态共享采样快照，健康检查不返回宿主机指标", async () => {
+    const status = async () => {
+      const result = await fetch(`${origin}/api/status`, { headers: { Origin: "https://h5.test" } });
+      expect(result.status).toBe(200);
+      expect(result.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.headers.get("Access-Control-Allow-Origin")).toBeNull();
+      return ((await result.json()) as WorkbenchServiceStatus).resources;
+    };
+    await expect.poll(async () => (await status()).sampledAt).toEqual(expect.any(Number));
+    const samples = await Promise.all([status(), status(), status()]);
+    expect(samples[0]).toEqual(samples[1]);
+    expect(samples[1]).toEqual(samples[2]);
+    const sample = samples[0]!;
+    expect(sample.processCpu).toEqual({ current: null, peak: null });
+    expect(sample.processMemory.current).toBeGreaterThan(0);
+    expect(sample.processMemory.peak).toBe(sample.processMemory.current);
+    const health = await (await fetch(`${origin}/api/health`)).json();
+    expect(health).toMatchObject({ status: "ok" });
+    expect(health).not.toHaveProperty("resources");
+  });
+
   it("接受 gzip 上传并压缩查询响应，原始日志与预检头保持完整", async () => {
     const log = event({ args: ["完整正文".repeat(1500)] });
     const uploaded = await fetch(`${origin}/api/logs`, {

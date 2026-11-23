@@ -349,10 +349,11 @@ function selectCopyAction(key: string): void {
   }
 }
 
-async function openService(): Promise<void> {
-  statusOpen.value = true;
-  await workbench.loadService();
+function syncServiceVisibility(): void {
+  workbench.setServiceVisible(statusOpen.value && accessState.value === "open" && document.visibilityState !== "hidden");
 }
+
+watch([statusOpen, accessState], syncServiceVisibility);
 
 function onKeydown(event: KeyboardEvent): void {
   if (accessState.value !== "open") return;
@@ -481,6 +482,7 @@ function onOnline(): void {
 }
 
 function onVisibility(): void {
+  syncServiceVisibility();
   if (document.visibilityState === "visible" && accessState.value === "open")
     workbench.connect();
 }
@@ -682,7 +684,7 @@ onBeforeUnmount(() => {
             :title="`服务状态 · ${connectionText}（工作台与服务的连接，不代表设备在线）`"
             aria-haspopup="dialog"
             :aria-expanded="statusOpen"
-            @click="openService"
+            @click="statusOpen = true"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <rect x="4" y="3" width="16" height="7" rx="2" />
@@ -797,9 +799,7 @@ onBeforeUnmount(() => {
       <StatusDialog
         v-model:show="statusOpen"
         :service="state.service"
-        :connection="connectionText"
-        :last-stream-at="state.lastStreamAt"
-        :client="currentClient"
+        :error="state.serviceError"
       />
 
       <Transition name="access-fade">

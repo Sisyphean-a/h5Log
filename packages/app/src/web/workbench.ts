@@ -5,9 +5,9 @@ import type {
   LogDetail,
   LogPage,
   LogSession,
-  ServiceStatus,
   StoredLog,
 } from "@h5-log/sdk";
+import { RESOURCE_INTERVAL_MS, type WorkbenchServiceStatus } from "../service-status.js";
 import type { LocalHistory } from "./history.js";
 import { requestIdOf } from "./format.js";
 import { createLogMatcher, type LogFilter } from "../log-filter.js";
@@ -36,10 +36,10 @@ export interface WorkbenchState {
   follow: boolean;
   connection: Connection;
   streamReady: boolean;
-  lastStreamAt: number | undefined;
   selectedId: number | undefined;
   detail: LogDetail | undefined;
-  service: ServiceStatus | undefined;
+  service: WorkbenchServiceStatus | undefined;
+  serviceError: string;
 }
 
 export interface StreamLike {
@@ -89,14 +89,17 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     follow: true,
     connection: "connecting",
     streamReady: false,
-    lastStreamAt: undefined,
     selectedId: undefined,
     detail: undefined,
     service: undefined,
+    serviceError: "",
   }) as WorkbenchState;
 
   let stream: StreamLike | undefined;
   let streamTimer: ReturnType<typeof setTimeout> | undefined;
+  let serviceVisible = false;
+  let serviceTimer: ReturnType<typeof setTimeout> | undefined;
+  let serviceController: AbortController | undefined;
   let pageController: AbortController | undefined;
   let requestVersion = 0;
   let sessionCursor = 0;
@@ -645,20 +648,38 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     state.detail = undefined;
   }
 
-  async function loadService(): Promise<void> {
-    if (lifecycle !== "active") return;
-    const generation = lifecycleVersion;
+  function stopServicePolling(): void {
+    clearTimeout(serviceTimer);
+    serviceController?.abort();
+    serviceController = undefined;
+  }
+
+  async function readService(): Promise<void> {
+    if (lifecycle !== "active" || !serviceVisible) return;
+    const controller = new AbortController();
+    serviceController = controller;
     try {
-      const service = await readJson<ServiceStatus>("./api/health");
-      if (generation !== lifecycleVersion) return;
+      const service = await readJson<WorkbenchServiceStatus>("./api/status", controller.signal);
+      if (controller.signal.aborted) return;
       state.service = service;
+      state.serviceError = "";
     } catch (error) {
-      if (generation !== lifecycleVersion) return;
-      notice(
-        `读取服务状态失败：${error instanceof Error ? error.message : "网络错误"}`,
-        true,
-      );
+      if (controller.signal.aborted) return;
+      state.serviceError = `读取服务状态失败：${error instanceof Error ? error.message : "网络错误"}`;
+    } finally {
+      if (!controller.signal.aborted) {
+        serviceController = undefined;
+        // Rule: 上一次读取结束后再排下一次，多页查看时错开读取缓存快照。
+        serviceTimer = setTimeout(() => void readService(), RESOURCE_INTERVAL_MS + Math.random() * 1500);
+      }
     }
+  }
+
+  function setServiceVisible(visible: boolean): void {
+    if (serviceVisible === visible) return;
+    serviceVisible = visible;
+    if (visible) void readService();
+    else stopServicePolling();
   }
 
   function connect(): void {
@@ -686,7 +707,6 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       current.addEventListener(type, (event) => {
         if (lifecycle !== "active" || stream !== current) return;
         if (type !== "error" && type !== "open") {
-          state.lastStreamAt = Date.now();
           state.connection = "open";
           watch();
         }
@@ -739,6 +759,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     previous?.close();
     pageController?.abort();
     pageController = undefined;
+    stopServicePolling();
     for (const controller of reads) controller.abort();
     state.loading = false;
     state.connection = "offline";
@@ -760,7 +781,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     clearView,
     openDetail,
     closeDetail,
-    loadService,
+    setServiceVisible,
     refreshSessions: refreshSessionsIndex,
     connect,
     handleLogs,
@@ -777,6 +798,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       lifecycle = "active";
       connect();
       reloadView();
+      void readService();
     },
     dispose(): void {
       if (lifecycle === "disposed") return;

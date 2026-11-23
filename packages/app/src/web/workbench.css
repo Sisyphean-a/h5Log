@@ -542,9 +542,6 @@
   line-height: 1.6;
   color: var(--ink-2);
 }
-.meta.wide {
-  grid-template-columns: 100px minmax(0, 1fr);
-}
 .meta dt {
   color: var(--muted);
   font-size: 13px;

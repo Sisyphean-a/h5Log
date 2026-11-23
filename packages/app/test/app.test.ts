@@ -173,7 +173,17 @@ it.each([
 it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务状态图标", async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => ({
     ok: true,
-    json: async () => String(input) === "./api/health" ? undefined : pageBody([log(1, "当前记录")]),
+    json: async () => String(input) === "./api/status" ? {
+      uptimeSeconds: 480, logs: 1, bytes: 200, clients: 1, subscribers: 1, received: 1, evicted: 0,
+      limits: { maxLogs: 8000, maxBytes: 16 * 2 ** 20, maxSubscribers: 50, maxEventBytes: 128 * 1024 },
+      resources: {
+        sampledAt: Date.now(),
+        hostCpu: { current: 12.5, peak: 25 },
+        hostMemory: { current: 2 ** 30, peak: 2 * 2 ** 30, total: 8 * 2 ** 30 },
+        processCpu: { current: 2.5, peak: 4 },
+        processMemory: { current: 90 * 2 ** 20, peak: 100 * 2 ** 20 },
+      },
+    } : pageBody([log(1, "当前记录")]),
   }));
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("EventSource", Stream);
@@ -204,8 +214,13 @@ it("顶部集中筛选与阅读操作，辅助入口只保留可访问的服务�
     expect(service.attributes("title")).toContain("实时连接");
     expect(wrapper.text()).not.toMatch(/接入 SDK|复制列表|导出列表/);
     await service.trigger("click");
-    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "./api/health")).toBe(true));
-    expect(document.body.textContent).toContain("正在读取服务状态");
+    await vi.waitFor(() => expect(document.body.textContent).toContain("资源监控"));
+    expect(fetchMock.mock.calls.some(([url]) => url === "./api/status")).toBe(true);
+    expect(document.body.textContent).toContain("宿主机总内存 8.00 GiB");
+    expect(document.body.textContent).toContain("100.0 MiB");
+    const statusLabels = [...document.querySelectorAll(".status-list dt")].map((label) => label.textContent);
+    expect(statusLabels).toEqual(["运行时长", "当前条数", "当前体积", "设备", "查看连接", "累计接收 / 淘汰"]);
+    expect(document.body.textContent).not.toMatch(/电脑与服务的连接|最近收到服务推送|服务器 ID|保留时长|电脑连接正常不代表|采样时间|每约 10 秒采样/);
   } finally {
     wrapper.unmount();
   }

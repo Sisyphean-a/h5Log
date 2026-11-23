@@ -10,6 +10,7 @@ import { CONTEXT_LIMITS, MAX_BATCH_EVENTS, MAX_EVENT_BYTES } from "@h5-log/sdk";
 import type { LogEvent } from "@h5-log/sdk";
 import { LogStore } from "./store.js";
 import type { LogFilter } from "./store.js";
+import { createResourceMonitor } from "./resource-monitor.js";
 export { LogStore } from "./store.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -183,6 +184,7 @@ export function createLogServer(options: ServerOptions = {}) {
     compressor: Gzip | undefined;
   }>();
   const startedAt = Date.now();
+  const monitor = createResourceMonitor();
   const maxSubscribers = 50;
   const allowedOrigins = options.allowedOrigins ?? ["*"];
   const sendEvent = (
@@ -211,13 +213,16 @@ export function createLogServer(options: ServerOptions = {}) {
     void (async () => {
       response.setHeader("X-Content-Type-Options", "nosniff");
       const origin = request.headers.origin;
+      const url = new URL(request.url ?? "/", "http://localhost");
+      const isWorkbenchStatus = url.pathname === "/api/status";
       if (
         origin &&
         !allowedOrigins.includes("*") &&
         !allowedOrigins.includes(origin)
       )
         throw new HttpError(403, "来源不允许");
-      if (origin) {
+      // Rule: 资源状态供同源工作台读取，不沿用 SDK 的跨域访问设置。
+      if (origin && !isWorkbenchStatus) {
         response.setHeader(
           "Access-Control-Allow-Origin",
           allowedOrigins.includes("*") ? "*" : origin,
@@ -233,8 +238,7 @@ export function createLogServer(options: ServerOptions = {}) {
         response.end();
         return;
       }
-      const url = new URL(request.url ?? "/", "http://localhost");
-      if (url.pathname === "/api/health" && request.method === "GET") {
+      if ((url.pathname === "/api/health" || isWorkbenchStatus) && request.method === "GET") {
         const stats = store.stats();
         await json(request, response, 200, {
           status: "ok",
@@ -250,6 +254,7 @@ export function createLogServer(options: ServerOptions = {}) {
             maxSubscribers,
             maxEventBytes: MAX_EVENT_BYTES,
           },
+          ...(isWorkbenchStatus ? { resources: monitor.read() } : {}),
         });
         return;
       }
@@ -375,6 +380,7 @@ export function createLogServer(options: ServerOptions = {}) {
       }
     });
   });
+  server.once("listening", monitor.start);
   server.requestTimeout = 10000;
   const cleanup = setInterval(() => {
     store.prune();
@@ -393,8 +399,12 @@ export function createLogServer(options: ServerOptions = {}) {
     }
     subscribers.clear();
   };
-  server.once("close", closeStreams);
+  server.once("close", () => {
+    monitor.stop();
+    closeStreams();
+  });
   const close = async (): Promise<void> => {
+    monitor.stop();
     closeStreams();
     if (!server.listening) return;
     const forceClose = setTimeout(() => server.closeAllConnections(), 5000);

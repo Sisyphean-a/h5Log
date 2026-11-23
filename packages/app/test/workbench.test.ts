@@ -305,13 +305,48 @@ describe("工作台状态", () => {
     workbench = createWorkbench({ fetchImpl, openStream });
     await workbench.load();
     await workbench.openDetail(1);
-    await workbench.loadService();
+    workbench.setServiceVisible(true);
     await workbench.refreshSessions();
     workbench.connect();
     const base = "https://example.test/h5-log/";
     const paths = fetchImpl.mock.calls.map(([url]) => new URL(String(url), base).pathname);
-    expect(paths).toEqual(["/h5-log/api/logs", "/h5-log/api/logs/1", "/h5-log/api/health", "/h5-log/api/logs"]);
+    expect(paths).toEqual(["/h5-log/api/logs", "/h5-log/api/logs/1", "/h5-log/api/status", "/h5-log/api/logs"]);
     expect(new URL(openStream.mock.calls[0]![0], base).pathname).toBe("/h5-log/api/stream");
+  });
+
+  it("可见时定期读取服务状态，失败保留快照，关闭后取消读取和重试", async () => {
+    vi.useFakeTimers();
+    const status = { now: 10 };
+    let pendingSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(status))
+      .mockRejectedValueOnce(new Error("网络断开"))
+      .mockImplementationOnce((_url, init) => {
+        pendingSignal = init?.signal ?? undefined;
+        return new Promise(() => {});
+      })
+      .mockResolvedValue(response({ now: 20 }));
+    workbench = createWorkbench({ fetchImpl });
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    workbench.setServiceVisible(true);
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(workbench.state.service?.now).toBe(10);
+    await vi.advanceTimersByTimeAsync(1501);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(workbench.state.service?.now).toBe(10);
+    expect(workbench.state.serviceError).toContain("网络断开");
+    await vi.advanceTimersByTimeAsync(11500);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    workbench.setServiceVisible(false);
+    expect(pendingSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    workbench.setServiceVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workbench.state.service?.now).toBe(20);
+    expect(workbench.state.serviceError).toBe("");
   });
 
   it("暂存后恢复当前历史页，忽略旧连接和迟到响应，最终销毁后不再恢复", async () => {
