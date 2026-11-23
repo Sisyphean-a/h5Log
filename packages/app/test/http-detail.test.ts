@@ -16,10 +16,7 @@ it("响应拆分为概览、查询参数、响应头和正文，并保留扩展�
   };
   const raw = JSON.stringify(payload);
   const wrapper = mount(HttpDetail, { props: { payload } });
-  expect(wrapper.find(".http-overview").text()).toContain("POST");
-  expect(wrapper.find(".http-facts").text()).toContain("响应");
-  expect(wrapper.find(".http-facts").text()).toContain("200");
-  expect(wrapper.find(".http-facts").text()).toContain("0 ms");
+  expect(wrapper.get(".http-request-line").text()).toBe("POST" + payload.url);
   expect(wrapper.findAll('[data-http-section="query"] dd').map((item) => item.text()))
     .toEqual(["one", "two", "订单"]);
   expect(wrapper.find('[data-http-section="headers"] h3').text()).toBe("响应头");
@@ -62,13 +59,13 @@ it("请求仅展示存在的区域，正文 false 和显式参数不会被当成
   wrapper.unmount();
 });
 
-it("失败信息、状态 0、空字符串、null 和非对象头信息都能读到", () => {
-  const wrapper = mount(HttpDetail, { props: { payload: {
+it("失败标记在详情标题，错误信息、空字符串和 null 仍可读", () => {
+  const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: false, detail: { log: log("http", [{
     phase: "error", method: "POST", url: "/api/orders", status: 0,
     headers: null, body: "", error: { name: "NetworkError", message: "网络中断" },
-  } } });
-  expect(wrapper.find(".http-facts").text()).toContain("失败");
-  expect(wrapper.find(".http-facts").text()).toContain("HTTP 0");
+  }]), related: [] } } });
+  expect(wrapper.get(".detail-title").text()).toContain("失败");
+  expect(wrapper.text()).not.toContain("HTTP 0");
   expect(wrapper.find('[data-http-section="headers"]').text()).toContain("null");
   expect(wrapper.find('[data-http-section="body"]').text()).toContain('""');
   expect(wrapper.find('[data-http-section="error"]').text()).toContain("网络中断");
@@ -77,7 +74,7 @@ it("失败信息、状态 0、空字符串、null 和非对象头信息都能读
 
 it("空记录和非对象头信息不会生成虚构字段或丢失内容", () => {
   const empty = mount(HttpDetail, { props: { payload: {} } });
-  expect(empty.find(".http-overview").exists()).toBe(false);
+  expect(empty.find(".http-request-line").exists()).toBe(false);
   expect(empty.findAll(".http-section")).toHaveLength(0);
   expect(empty.find(".json").text()).toBe("{}");
   empty.unmount();
@@ -96,34 +93,51 @@ function log(source: StoredLog["source"], args: JsonValue[]): StoredLog {
   };
 }
 
-it("详情页面地址完整展示且不省略，缺少设备名称时仍显示设备标识", async () => {
+it("解析页面 URL 时保留同名参数、空值和片段，文本不会作为 HTML 执行", async () => {
   const item = log("console", ["普通输出"]);
-  item.pageUrl = `https://test.example/very-long-path?token=${"abcdef".repeat(80)}`;
-  const wrapper = mount(LogDetailPanel, { props: { detail: { log: item, related: [] } } });
+  item.pageUrl = "https://test.example/orders?tag=one&tag=%E8%AE%A2%E5%8D%95&empty=&q=<b>#section?anchor=1";
+  const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: true, detail: { log: item, related: [] } } });
   try {
-    const page = wrapper.findAll(".meta dd").at(-1)!;
+    const page = wrapper.findAll(".meta > dd").at(-1)!;
+    expect(page.get("code").text()).toBe("https://test.example/orders#section?anchor=1");
+    expect(page.findAll("dl dt").map((key) => key.text())).toEqual(["tag", "tag", "empty", "q"]);
+    expect(page.findAll("dl dd").map((value) => value.text())).toEqual(["one", "订单", '""', "<b>"]);
+    expect(page.find("b").exists()).toBe(false);
+    await wrapper.setProps({ parsePageUrl: false });
     expect(page.text()).toBe(item.pageUrl);
-    expect(page.classes()).not.toContain("ellipsis");
-    await wrapper.setProps({ detail: { log: { ...item, deviceName: "", pageUrl: "" }, related: [] } });
-    expect(wrapper.findAll(".meta dd")[1]!.text()).toBe("demo / test · device-a");
-    expect(page.text()).toBe("—");
   } finally {
     wrapper.unmount();
   }
 });
 
+it.each(["", "https://test.example/orders?&&", "https://test.example/orders#anchor?not=a-query"])("无查询参数时没有切换按钮：%s", (pageUrl) => {
+  const item = { ...log("console", ["普通输出"]), deviceName: "", pageUrl };
+  const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: true, detail: { log: item, related: [] } } });
+  expect(wrapper.find(".meta button").exists()).toBe(false);
+  expect(wrapper.findAll(".meta > dd")[1]!.text()).toBe("demo / test · device-a");
+  expect(wrapper.findAll(".meta > dd").at(-1)!.text()).toBe(pageUrl || "—");
+  wrapper.unmount();
+});
+
 it("详情面板只拆分接口对象，保留附加输出与原始复制数据", async () => {
   const item = log("http", [{ phase: "request", requestId: "request-a", method: "POST", url: "/api/orders", body: { id: 1 } }, "附加输出"]);
   const related = [log("http", [{ phase: "response", status: 200 }])];
-  const wrapper = mount(LogDetailPanel, { props: { detail: { log: item, related } } });
+  const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: false, detail: { log: item, related } } });
   try {
     expect(wrapper.findComponent(HttpDetail).exists()).toBe(true);
-    expect(wrapper.findAll(".meta dt").map((item) => item.text())).toEqual(["接收时间", "应用设备", "页面"]);
+    expect(wrapper.get(".detail-title").text()).toContain("请求");
+    expect(wrapper.get(".http-request-line").text()).toBe("POST/api/orders");
+    expect(wrapper.findAll(".meta > dt").map((item) => item.text())).toEqual(["接收时间", "应用设备", "页面"]);
     expect(wrapper.findAll(".meta dd")[1]!.text()).toBe("demo / test · 测试设备");
     expect(wrapper.find('[data-http-section="args"]').text()).toContain("附加输出");
     await wrapper.find(".detail-actions button").trigger("click");
     expect(JSON.parse(wrapper.emitted("copy")![0]![0] as string)).toEqual({ log: item, related });
+    const response = log("http", [{ phase: "response", status: 200, durationMs: 822 }]);
+    await wrapper.setProps({ detail: { log: response, related: [item] } });
+    expect(wrapper.get(".detail-title").text()).toContain("响应");
+    expect(wrapper.text()).not.toMatch(/HTTP 200|822 ms/);
     await wrapper.setProps({ detail: { log: log("console", ["普通输出"]), related: [] } });
+    expect(wrapper.get(".detail-title").text()).not.toMatch(/请求|响应/);
     expect(wrapper.findComponent(HttpDetail).exists()).toBe(false);
     expect(wrapper.find(".json").text()).toBe("普通输出");
   } finally {

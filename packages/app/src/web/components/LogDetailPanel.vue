@@ -14,12 +14,37 @@ import HttpDetail from "./HttpDetail.vue";
 
 const props = defineProps<{
   detail: LogDetail;
+  parsePageUrl: boolean;
 }>();
-const emit = defineEmits<{ close: []; copy: [text: string] }>();
+const emit = defineEmits<{ close: []; copy: [text: string]; "update:parsePageUrl": [enabled: boolean] }>();
 
 const log = computed(() => props.detail.log);
 const payload = computed(() => httpPayload(log.value));
 const related = computed(() => props.detail.related);
+const phaseLabel = computed(() => {
+  const phase = payload.value?.phase;
+  switch (phase) {
+    case "request": return "请求";
+    case "response": return "响应";
+    case "error": return "失败";
+    case undefined: return undefined;
+    default: return typeof phase === "string" && phase !== "" ? phase : JSON.stringify(phase);
+  }
+});
+
+const pageQuery = computed(() => {
+  const url = log.value.pageUrl;
+  const hashStart = url.indexOf("#");
+  const queryEnd = hashStart < 0 ? url.length : hashStart;
+  const queryStart = url.indexOf("?");
+  if (queryStart < 0 || queryStart >= queryEnd) return;
+  const search = url.slice(queryStart, queryEnd);
+  if (!/[^&]/.test(search.slice(1))) return;
+  return { address: url.slice(0, queryStart) + url.slice(queryEnd), search };
+});
+const parsedPageUrl = computed(() => props.parsePageUrl && pageQuery.value
+  ? { address: pageQuery.value.address, params: [...new URLSearchParams(pageQuery.value.search)] }
+  : undefined);
 
 function copyJson(): void {
   emit("copy", jsonText({ log: log.value, related: related.value }));
@@ -34,6 +59,7 @@ function copyJson(): void {
           <i class="level-dot" />{{ levelLabels[log.level] ?? log.level }}
         </span>
         <span class="detail-source">{{ sourceLabels[log.source] ?? log.source }}</span>
+        <span v-if="phaseLabel" class="detail-phase" :class="{ 'is-error': payload?.phase === 'error' }">{{ phaseLabel }}</span>
       </div>
       <div class="detail-actions">
         <NButton size="tiny" quaternary @click="copyJson">复制 JSON</NButton>
@@ -48,8 +74,31 @@ function copyJson(): void {
         <dd>{{ formatDateTime(log.receivedAt) }}</dd>
         <dt>应用设备</dt>
         <dd>{{ log.appId }} / {{ log.environment }} · {{ log.deviceName || log.deviceId }}</dd>
-        <dt>页面</dt>
-        <dd class="mono">{{ log.pageUrl || "—" }}</dd>
+        <dt>
+          <button
+            v-if="pageQuery"
+            type="button"
+            class="page-url-toggle"
+            aria-label="页面 URL 解析（全局）"
+            :aria-pressed="parsePageUrl"
+            :title="parsePageUrl ? '关闭全局 URL 解析' : '开启全局 URL 解析'"
+            @click="emit('update:parsePageUrl', !parsePageUrl)"
+          >
+            页面
+            <svg viewBox="0 0 12 12" width="12" height="12" fill="none" aria-hidden="true">
+              <path d="m4 3 3 3-3 3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <template v-else>页面</template>
+        </dt>
+        <dd class="mono">
+          <code>{{ (parsedPageUrl?.address ?? log.pageUrl) || "—" }}</code>
+          <dl v-if="parsedPageUrl" class="detail-fields page-url-params">
+            <template v-for="([key, value], index) in parsedPageUrl.params" :key="index">
+              <dt>{{ key || '（空名称）' }}</dt><dd>{{ value === '' ? '""' : value }}</dd>
+            </template>
+          </dl>
+        </dd>
       </dl>
 
       <HttpDetail v-if="payload" :payload="payload" />

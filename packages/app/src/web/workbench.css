@@ -516,6 +516,17 @@
 .detail-source {
   color: var(--faint);
 }
+.detail-phase {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.detail-phase.is-error {
+  color: var(--error);
+}
 .detail-actions {
   display: flex;
   gap: 3px;
@@ -542,14 +553,58 @@
   line-height: 1.6;
   color: var(--ink-2);
 }
-.meta dt {
+.meta > dt {
   color: var(--muted);
   font-size: 13px;
   padding-top: 1px;
 }
-.meta dd {
+.meta > dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+.page-url-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin: -4px -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.page-url-toggle[aria-pressed="true"] svg {
+  transform: rotate(90deg);
+}
+.page-url-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .page-url-toggle:hover {
+    background: var(--accent-soft);
+  }
+}
+@media (pointer: coarse) {
+  .page-url-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+.meta > .mono > code {
+  font: inherit;
+}
+.page-url-params.detail-fields {
+  grid-template-columns: fit-content(12ch) minmax(0, 1fr);
+  gap: 2px 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  font: inherit;
+  line-height: 1.5;
 }
 .mono {
   font-family: var(--mono);
@@ -593,11 +648,6 @@
 
 /* ---------- 接口详情：用紧凑分区替代整个协议对象的缩进 ---------- */
 
-.http-overview {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
 .http-request-line {
   display: flex;
   align-items: baseline;
@@ -618,18 +668,6 @@
   color: var(--ink);
   font: 13px/1.6 var(--mono);
 }
-.http-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 14px;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.5;
-  font-variant-numeric: tabular-nums;
-}
-.http-failure {
-  color: var(--error);
-}
 .http-section {
   margin-top: 12px;
   padding-top: 10px;
@@ -649,24 +687,24 @@
   color: var(--faint);
   font: 400 12px var(--mono);
 }
-.http-fields {
+.detail-fields {
   display: grid;
   grid-template-columns: minmax(88px, 30%) minmax(0, 1fr);
   gap: 4px 10px;
   margin: 0;
   font: 12.5px/1.65 var(--mono);
 }
-.http-fields dt {
+.detail-fields dt {
   overflow-wrap: anywhere;
   color: var(--muted);
 }
-.http-fields dd {
+.detail-fields dd {
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   color: var(--ink-2);
 }
-.http-fields .http-field-structured {
+.detail-fields .http-field-structured {
   grid-column: 1 / -1;
 }
 .http-section .json,

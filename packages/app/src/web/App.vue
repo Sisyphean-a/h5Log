@@ -116,6 +116,7 @@ const MIN_PANE_WIDTH = 320;
 const RESIZER_WIDTH = 12;
 const bodyWidth = ref(0);
 const preferredDetailWidth = ref<number>();
+const parsePageUrl = ref<boolean>();
 const resizing = ref(false);
 const maxDetailWidth = computed(() => Math.max(MIN_PANE_WIDTH, bodyWidth.value - MIN_PANE_WIDTH - RESIZER_WIDTH));
 const detailWidth = computed(() => Math.min(maxDetailWidth.value, Math.max(
@@ -420,6 +421,32 @@ async function saveDetailWidth(): Promise<void> {
   }
 }
 
+async function restorePageUrlParsing(): Promise<void> {
+  if (!history) return;
+  try {
+    const enabled = await history.loadPageUrlParsing();
+    // Rule: 读取期间点过开关时，以本页最后一次操作为准。
+    if (!layoutDisposed && parsePageUrl.value === undefined) parsePageUrl.value = enabled;
+  } catch (error) {
+    if (!layoutDisposed)
+      showToast(`读取页面 URL 设置失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function setPageUrlParsing(enabled: boolean): Promise<void> {
+  parsePageUrl.value = enabled;
+  if (!history) {
+    showToast("浏览器不支持 IndexedDB，URL 解析设置仅在本次打开期间生效");
+    return;
+  }
+  try {
+    await history.savePageUrlParsing(enabled);
+  } catch (error) {
+    if (!layoutDisposed)
+      showToast(`保存页面 URL 设置失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function finishResize(): void {
   const adjusted = resizing.value && preferredDetailWidth.value !== undefined;
   stopResize();
@@ -493,6 +520,7 @@ function startWorkbench(): void {
   workbench.connect();
   void workbench.load();
   void restoreDetailWidth();
+  void restorePageUrlParsing();
 }
 
 // Rule: 未解锁时不建立 SSE、不读取日志，避免日志在蒙版背后提前进入页面。
@@ -775,6 +803,8 @@ onBeforeUnmount(() => {
             v-if="state.detail"
             id="log-detail"
             :detail="state.detail"
+            :parse-page-url="parsePageUrl ?? false"
+            @update:parse-page-url="setPageUrlParsing"
             @close="workbench.closeDetail()"
             @copy="(text: string) => copyText(text, '详情 JSON')"
           />

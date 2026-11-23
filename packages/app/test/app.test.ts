@@ -346,6 +346,55 @@ it("详情分隔条支持拖动、键盘和宽度边界，关闭重开保留当�
   }
 });
 
+it("页面 URL 默认显示原文，全局切换在日志之间共享，并恢复两种已保存的状态", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  await saveAccessKey(ACCESS_KEY);
+  const entries = [1, 2].map((id) => ({ ...log(id, `日志 ${id}`), pageUrl: `https://h5.test/home?id=${id}` }));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+    ok: true,
+    json: async () => {
+      const entry = entries.find(({ id }) => String(input) === `./api/logs/${id}`);
+      return entry ? { log: entry, related: [] } : pageBody(entries);
+    },
+  })));
+  vi.stubGlobal("EventSource", Stream);
+  const prefs = localHistory.createLocalHistory()!;
+  let wrapper = mount(App, { attachTo: document.body });
+  const toggle = () => wrapper.get(".page-url-toggle");
+  async function openLog(index: number) {
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2));
+    await wrapper.findAll(".log-row")[index]!.trigger("click");
+  }
+  function reload() {
+    wrapper.unmount();
+    wrapper = mount(App, { attachTo: document.body });
+  }
+  try {
+    await openLog(0);
+    expect(toggle().attributes("aria-pressed")).toBe("false");
+    expect(wrapper.get(".meta > dd:last-child").text()).toBe(entries[0]!.pageUrl);
+    await toggle().trigger("click");
+    await vi.waitFor(async () => expect(await prefs.loadPageUrlParsing()).toBe(true));
+    await openLog(1);
+    expect(wrapper.get(".page-url-params dd").text()).toBe("2");
+
+    reload();
+    await openLog(0);
+    await vi.waitFor(() => expect(toggle().attributes("aria-pressed")).toBe("true"));
+    await toggle().trigger("click");
+    await vi.waitFor(async () => expect(await prefs.loadPageUrlParsing()).toBe(false));
+    await openLog(1);
+    expect(wrapper.get(".meta > dd:last-child").text()).toBe(entries[1]!.pageUrl);
+
+    reload();
+    await openLog(1);
+    expect(toggle().attributes("aria-pressed")).toBe("false");
+  } finally {
+    wrapper.unmount();
+    prefs.dispose();
+  }
+});
+
 it("详情宽度从 IndexedDB 恢复，拖动结束保存，重开页面沿用偏好而非窄窗口的限制值", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
   await saveAccessKey(ACCESS_KEY);

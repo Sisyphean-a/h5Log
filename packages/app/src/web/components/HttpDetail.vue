@@ -5,13 +5,8 @@ import JsonBlock from "./JsonBlock.vue";
 
 const props = defineProps<{ payload: Record<string, JsonValue> }>();
 const has = (key: string): boolean => Object.hasOwn(props.payload, key);
-const overviewKeys = ["phase", "method", "url", "status", "durationMs"];
-// Rule: 协议层请求标识只用于内部关联与原始复制，不进入阅读视图。
-const knownKeys = new Set([...overviewKeys, "requestId", "params", "headers", "body", "error"]);
-const hasOverview = computed(() => overviewKeys.some(has));
-const phaseLabel = computed(() => props.payload.phase === "request" ? "请求"
-  : props.payload.phase === "response" ? "响应"
-    : props.payload.phase === "error" ? "失败" : inlineValue(props.payload.phase));
+// Rule: 收发阶段由详情标题显示；状态和耗时仅保留在列表与原始数据中。
+const knownKeys = new Set(["phase", "method", "url", "status", "durationMs", "requestId", "params", "headers", "body", "error"]);
 
 const query = computed(() => {
   if (typeof props.payload.url !== "string") return [];
@@ -50,21 +45,14 @@ function inlineValue(value: unknown): string {
 
 <template>
   <div class="http-detail">
-    <div v-if="hasOverview" class="http-overview">
-      <div v-if="has('method') || has('url')" class="http-request-line">
-        <span v-if="has('method')" class="http-method">{{ inlineValue(payload.method) }}</span>
-        <code v-if="has('url')" class="http-endpoint ellipsis" :title="inlineValue(payload.url)">{{ inlineValue(payload.url) }}</code>
-      </div>
-      <div v-if="has('phase') || has('status') || has('durationMs')" class="http-facts">
-        <span v-if="has('phase')" :class="{ 'http-failure': payload.phase === 'error' }">{{ phaseLabel }}</span>
-        <span v-if="has('status')" :class="{ 'http-failure': typeof payload.status === 'number' && payload.status >= 400 }">HTTP {{ inlineValue(payload.status) }}</span>
-        <span v-if="has('durationMs')">{{ inlineValue(payload.durationMs) }}<template v-if="typeof payload.durationMs === 'number'"> ms</template></span>
-      </div>
+    <div v-if="has('method') || has('url')" class="http-request-line">
+      <span v-if="has('method')" class="http-method">{{ inlineValue(payload.method) }}</span>
+      <code v-if="has('url')" class="http-endpoint ellipsis" :title="inlineValue(payload.url)">{{ inlineValue(payload.url) }}</code>
     </div>
 
     <section v-if="query.length > 0" class="http-section" data-http-section="query">
       <h3>查询参数 <span>{{ query.length }}</span></h3>
-      <dl class="http-fields">
+      <dl class="detail-fields">
         <template v-for="([key, value], index) in query" :key="index">
           <dt>{{ key || '（空名称）' }}</dt><dd>{{ value === '' ? '""' : value }}</dd>
         </template>
@@ -74,7 +62,7 @@ function inlineValue(value: unknown): string {
     <section v-for="section in sections" :key="section.key" class="http-section" :data-http-section="section.key">
       <h3>{{ section.label }}</h3>
       <template v-if="section.key === 'headers' && headers !== undefined">
-        <dl v-if="headers.length > 0" class="http-fields">
+        <dl v-if="headers.length > 0" class="detail-fields">
           <template v-for="[key, value] in headers" :key="key">
             <dt>{{ key }}</dt><dd>{{ inlineValue(value) }}</dd>
           </template>
@@ -87,7 +75,7 @@ function inlineValue(value: unknown): string {
 
     <section v-if="hasExtra" class="http-section" data-http-section="extra">
       <h3>其他字段</h3>
-      <dl class="http-fields">
+      <dl class="detail-fields">
         <template v-for="(value, key) in extra" :key="key">
           <dt :class="{ 'http-field-structured': structuredValue(value) }">{{ key }}</dt>
           <dd :class="{ 'http-field-structured': structuredValue(value) }">

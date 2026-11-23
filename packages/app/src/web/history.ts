@@ -6,6 +6,7 @@ const DB_VERSION = 1;
 const LOG_STORE = "logs";
 const META_STORE = "meta";
 const DETAIL_WIDTH_KEY = "ui:detail-width";
+const PAGE_URL_PARSING_KEY = "ui:parse-page-url";
 const ACCOUNTING_VERSION = 1;
 const DEFAULT_MAX_LOGS = 50_000;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
@@ -29,6 +30,8 @@ export interface LocalHistory {
   clear(): Promise<void>;
   loadDetailWidth(): Promise<number | undefined>;
   saveDetailWidth(width: number): Promise<void>;
+  loadPageUrlParsing(): Promise<boolean | undefined>;
+  savePageUrlParsing(enabled: boolean): Promise<void>;
   dispose(): void;
 }
 
@@ -302,6 +305,17 @@ export function createLocalHistory(options: LocalHistoryOptions = {}): LocalHist
     return scan(await open(), sid, options.before, options.limit, options.accept);
   }
 
+  async function readPreference(key: string): Promise<{ v: unknown } | undefined> {
+    return transact(await open(), [META_STORE], "readonly", (transaction) =>
+      request(transaction.objectStore(META_STORE).get(key)));
+  }
+
+  async function writePreference(key: string, value: number | boolean): Promise<void> {
+    await transact(await open(), [META_STORE], "readwrite", async (transaction) => {
+      await request(transaction.objectStore(META_STORE).put({ k: key, v: value }));
+    });
+  }
+
   return {
     setServerId(next): void {
       if (disposed || next === serverId) return;
@@ -348,19 +362,24 @@ export function createLocalHistory(options: LocalHistoryOptions = {}): LocalHist
       return ready;
     },
     async loadDetailWidth(): Promise<number | undefined> {
-      return transact(await open(), [META_STORE], "readonly", async (transaction) => {
-        const record = await request<{ v: unknown } | undefined>(transaction.objectStore(META_STORE).get(DETAIL_WIDTH_KEY));
-        if (record === undefined) return undefined;
-        if (typeof record.v !== "number" || !Number.isFinite(record.v) || record.v <= 0)
-          throw new Error("已保存的详情宽度无效");
-        return record.v;
-      });
+      const record = await readPreference(DETAIL_WIDTH_KEY);
+      if (record === undefined) return undefined;
+      if (typeof record.v !== "number" || !Number.isFinite(record.v) || record.v <= 0)
+        throw new Error("已保存的详情宽度无效");
+      return record.v;
     },
     async saveDetailWidth(width): Promise<void> {
       if (!Number.isFinite(width) || width <= 0) throw new Error("详情宽度无效");
-      await transact(await open(), [META_STORE], "readwrite", async (transaction) => {
-        await request(transaction.objectStore(META_STORE).put({ k: DETAIL_WIDTH_KEY, v: width }));
-      });
+      await writePreference(DETAIL_WIDTH_KEY, width);
+    },
+    async loadPageUrlParsing(): Promise<boolean | undefined> {
+      const record = await readPreference(PAGE_URL_PARSING_KEY);
+      if (record === undefined) return undefined;
+      if (typeof record.v !== "boolean") throw new Error("已保存的页面 URL 解析设置无效");
+      return record.v;
+    },
+    async savePageUrlParsing(enabled): Promise<void> {
+      await writePreference(PAGE_URL_PARSING_KEY, enabled);
     },
     dispose(): void {
       disposed = true;

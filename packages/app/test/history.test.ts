@@ -221,11 +221,13 @@ describe("浏览器本地历史", () => {
     expect(page.logs.map((item) => item.id)).toEqual([9]);
   });
 
-  it("详情宽度跨实例保留，不影响日志，也不随日志清空或服务重启重置", async () => {
+  it("详情宽度与 URL 解析偏好不随日志清空或服务重启重置", async () => {
     const local = await start();
     expect(await local.loadDetailWidth()).toBeUndefined();
+    expect(await local.loadPageUrlParsing()).toBeUndefined();
     local.append([log(1)]);
     await local.saveDetailWidth(640);
+    await local.savePageUrlParsing(true);
     expect((await local.page({ limit: 10, accept: acceptAll })).logs.map((item) => item.id)).toEqual([1]);
     await local.clear();
     local.setServerId("server-b");
@@ -234,6 +236,7 @@ describe("浏览器本地历史", () => {
     local.dispose();
     history = createLocalHistory()!;
     expect(await history.loadDetailWidth()).toBe(640);
+    expect(await history.loadPageUrlParsing()).toBe(true);
     await expect(history.saveDetailWidth(Number.NaN)).rejects.toThrow("详情宽度无效");
     expect(await history.loadDetailWidth()).toBe(640);
   });
