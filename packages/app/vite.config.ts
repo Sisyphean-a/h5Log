@@ -8,7 +8,7 @@ export default defineConfig({
     // Rule: 5173 被同机其他项目占用，工作台固定用 5388，避免开发时抢端口。
     port: 5388,
     strictPort: true,
-    proxy: { "/api": process.env.H5_LOG_DEV_PROXY ?? "http://127.0.0.1:3000" },
+    proxy: { "/api": process.env.H5_LOG_DEV_PROXY ?? "http://127.0.0.1:3685" },
   },
   build: {
     outDir: "dist/web",
