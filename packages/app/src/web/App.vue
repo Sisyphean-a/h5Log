@@ -265,7 +265,7 @@ function onSearchInput(value: string): void {
 }
 
 function toggleFollow(): void {
-  state.follow = !state.follow;
+  workbench.setFollowing(!state.follow);
 }
 
 // Rule: 常用形态是盯住一个设备，首次加载自动选中最近上报的客户端。
@@ -510,13 +510,15 @@ function onOnline(): void {
 
 function onVisibility(): void {
   syncServiceVisibility();
-  if (document.visibilityState === "visible" && accessState.value === "open")
-    workbench.connect();
+  const visible = document.visibilityState === "visible";
+  workbench.setPageVisible(visible);
+  if (visible && accessState.value === "open") workbench.connect();
 }
 
 function startWorkbench(): void {
   if (workbenchStarted) return;
   workbenchStarted = true;
+  workbench.setPageVisible(document.visibilityState !== "hidden");
   workbench.connect();
   void workbench.load();
   void restoreDetailWidth();
@@ -806,7 +808,7 @@ onBeforeUnmount(() => {
             :parse-page-url="parsePageUrl ?? false"
             @update:parse-page-url="setPageUrlParsing"
             @close="workbench.closeDetail()"
-            @copy="(text: string) => copyText(text, '详情 JSON')"
+            @copy="copyText"
           />
         </div>
       </div>

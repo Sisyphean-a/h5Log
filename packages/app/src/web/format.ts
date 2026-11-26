@@ -145,9 +145,9 @@ const JSON_ESCAPE = /^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/;
 
 /**
  * Rule: 对展示文本做词法高亮；不做 HTML 拼接，渲染层用文本节点。
- * Failure: 超过上限时返回单个纯文本 token，避免生成数千个节点。
+ * Failure: 超过字符或词法项上限时仅返回纯文本，限制渲染节点数。
  */
-export function jsonTokens(text: string, limit = 20000): JsonToken[] {
+export function jsonTokens(text: string, limit = 20000, tokenLimit = Infinity): JsonToken[] {
   if (text.length > limit) return [{ kind: "plain", text }];
   const tokens: JsonToken[] = [];
   let index = 0;
@@ -163,6 +163,7 @@ export function jsonTokens(text: string, limit = 20000): JsonToken[] {
   };
 
   while (index < text.length) {
+    if (tokens.length >= tokenLimit) return [{ kind: "plain", text }];
     const char = text[index]!;
     if (char === '"') {
       let end = index + 1;
@@ -203,5 +204,5 @@ export function jsonTokens(text: string, limit = 20000): JsonToken[] {
     index += 1;
   }
   flushPlain(text.length);
-  return tokens;
+  return tokens.length > tokenLimit ? [{ kind: "plain", text }] : tokens;
 }

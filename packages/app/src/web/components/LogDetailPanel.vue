@@ -16,7 +16,7 @@ const props = defineProps<{
   detail: LogDetail;
   parsePageUrl: boolean;
 }>();
-const emit = defineEmits<{ close: []; copy: [text: string]; "update:parsePageUrl": [enabled: boolean] }>();
+const emit = defineEmits<{ close: []; copy: [text: string, label: string]; "update:parsePageUrl": [enabled: boolean] }>();
 
 const log = computed(() => props.detail.log);
 const payload = computed(() => httpPayload(log.value));
@@ -47,7 +47,7 @@ const parsedPageUrl = computed(() => props.parsePageUrl && pageQuery.value
   : undefined);
 
 function copyJson(): void {
-  emit("copy", jsonText({ log: log.value, related: related.value }));
+  emit("copy", jsonText({ log: log.value, related: related.value }), "详情 JSON");
 }
 </script>
 
@@ -101,7 +101,7 @@ function copyJson(): void {
         </dd>
       </dl>
 
-      <HttpDetail v-if="payload" :payload="payload" />
+      <HttpDetail v-if="payload" :payload="payload" @copy="(text, label) => emit('copy', text, label)" />
       <section v-else-if="log.args.length > 0" class="block">
         <h3>内容</h3>
         <JsonBlock :value="log.args.length === 1 ? log.args[0] : log.args" />

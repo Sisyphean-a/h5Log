@@ -623,30 +623,35 @@ it("搜索慢网时保留命中行，快速替换关键词忽略旧响应，失�
   }
 });
 
-it("达到 200 行上限后仍跟随最新日志，暂停时不滚动，恢复后立即到底", async () => {
-  const entries = Array.from({ length: 200 }, (_, index) => log(index + 1, `记录-${index + 1}`));
+it("达到 2000 行上限后仍跟随最新日志，暂停时保留原行与滚动位置", async () => {
+  const entries = Array.from({ length: 2000 }, (_, index) => log(index + 1, `记录-${index + 1}`));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => pageBody(entries) })));
   vi.stubGlobal("EventSource", Stream);
   const wrapper = mount(App, { attachTo: document.body });
   try {
-    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(200));
+    await vi.waitFor(() => expect(wrapper.findAll(".log-row")).toHaveLength(2000));
     await flushPromises();
     const workspace = wrapper.find<HTMLElement>(".workspace").element;
     let height = 1000;
     Object.defineProperty(workspace, "scrollHeight", { configurable: true, get: () => height });
     workspace.scrollTop = height;
     height = 1100;
-    Stream.instances.at(-1)!.emit("logs", { logs: [log(201, "最新记录")], clients: [client] });
+    Stream.instances.at(-1)!.emit("logs", { logs: [log(2001, "最新记录")], clients: [client] });
     await flushPromises();
-    expect(wrapper.findAll(".log-row")).toHaveLength(200);
+    expect(wrapper.findAll(".log-row")).toHaveLength(2000);
     expect(workspace.scrollTop).toBe(height);
     await wrapper.find(".toggle").trigger("click");
+    const first = wrapper.get(".log-row").element;
     height = 1200;
-    Stream.instances.at(-1)!.emit("logs", { logs: [log(202, "暂停期间记录")], clients: [client] });
+    Stream.instances.at(-1)!.emit("logs", { logs: [log(2002, "暂停期间记录")], clients: [client] });
     await flushPromises();
+    expect(wrapper.get(".log-row").element).toBe(first);
+    expect(wrapper.find('[data-log-id="2002"]').exists()).toBe(false);
     expect(workspace.scrollTop).toBe(1100);
     await wrapper.find(".toggle").trigger("click");
     await flushPromises();
+    expect(wrapper.find('[data-log-id="2002"]').exists()).toBe(true);
     expect(workspace.scrollTop).toBe(height);
   } finally {
     wrapper.unmount();
@@ -884,6 +889,27 @@ it.each(["request", "response"])("右键 %s 只显示对应接口菜单并复制
     await flushPromises();
     expect(writeText).toHaveBeenCalledWith(JSON.stringify({ phase }, null, 2));
     expect(wrapper.find(".toast").text()).toBe(`已复制${label}体：{ "phase": "${phase}" }`);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("详情标题和单个 JSON 键通过同一剪贴板通路复制，并显示正确的类型", async () => {
+  const entry: StoredLog = {
+    ...log(1, ""), source: "http",
+    args: [{ phase: "response", headers: { "content-type": "application/json" }, body: { ok: true } }],
+  };
+  const { wrapper, writeText } = await mountCopyScenario([entry]);
+  try {
+    await wrapper.get(".log-row").trigger("click");
+    await wrapper.get('button[aria-label="复制响应正文"]').trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenLastCalledWith(JSON.stringify({ ok: true }, null, 2));
+    expect(wrapper.get(".toast").text()).toBe('已复制响应正文：{ "ok": true }');
+    await wrapper.get("button.tok-key").trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenLastCalledWith("ok");
+    expect(wrapper.get(".toast").text()).toBe("已复制响应正文键：ok");
   } finally {
     wrapper.unmount();
   }

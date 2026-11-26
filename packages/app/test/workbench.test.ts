@@ -117,6 +117,49 @@ describe("工作台状态", () => {
     expect(workbench.state.filter.clientKey).toBe("client-b");
   });
 
+  it("暂停跟随固定选中行与前台窗口，隐藏时立即采用限长实时窗口", async () => {
+    const initial = Array.from({ length: 2000 }, (_, index) => log(index + 1));
+    const fetchImpl = vi.fn().mockResolvedValueOnce(response(page(initial, 2000)))
+      .mockResolvedValueOnce(response({ log: initial[0], related: [] }));
+    workbench = createWorkbench({ fetchImpl });
+    await workbench.load();
+    const displayed = workbench.state.logs;
+    workbench.setFollowing(false);
+    await workbench.openDetail(1);
+    workbench.handleLogs({ logs: [log(2001), log(2002)], clients: [client] });
+    expect(workbench.state.logs).toBe(displayed);
+    expect(workbench.state.detail?.log.id).toBe(1);
+    expect(workbench.state.cursor).toBe(2002);
+    workbench.setPageVisible(false);
+    expect(workbench.state.logs.map(({ id }) => id)).toEqual(Array.from({ length: 2000 }, (_, index) => index + 3));
+    workbench.handleLogs({ logs: [log(2003)], clients: [client] });
+    expect(workbench.state.logs[0]?.id).toBe(4);
+    workbench.setPageVisible(true);
+    workbench.handleLogs({ logs: [log(2004)], clients: [client] });
+    expect(workbench.state.logs.at(-1)?.id).toBe(2003);
+    workbench.setFollowing(true);
+    expect(workbench.state.logs.at(-1)?.id).toBe(2004);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("暂停时后台淘汰和补读不移动前台窗口，手动读取最新仍可切页", async () => {
+    const initial = [log(1), log(2)];
+    const latest = [log(2), log(3)];
+    const fetchImpl = vi.fn().mockResolvedValueOnce(response(page(initial, 2)))
+      .mockResolvedValue(response(page(latest, 3, { sessions: [session({ logCount: 2 })] })));
+    workbench = createWorkbench({ fetchImpl });
+    await workbench.load();
+    const displayed = workbench.state.logs;
+    workbench.setFollowing(false);
+    workbench.handleClients({ clients: [{ ...client, logCount: 2 }], expiresBefore: 0, evictedThroughId: 1 });
+    await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(workbench.state.logs).toBe(displayed);
+    await workbench.latest();
+    expect(workbench.state.logs.map(({ id }) => id)).toEqual([2, 3]);
+    expect(workbench.state.follow).toBe(false);
+  });
+
   it("无关的全局淘汰不触发当前设备的列表或索引查询", async () => {
     const fetchImpl = vi.fn();
     workbench = createWorkbench({ fetchImpl });
@@ -139,7 +182,7 @@ describe("工作台状态", () => {
     workbench.handleClients({ clients: [{ ...client, logCount: 1 }], expiresBefore: 0, evictedThroughId: 1 });
     await vi.waitFor(() => expect(workbench!.state.loading).toBe(false));
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(new URL(String(fetchImpl.mock.calls[0]![0]), "http://localhost").searchParams.get("limit")).toBe("200");
+    expect(new URL(String(fetchImpl.mock.calls[0]![0]), "http://localhost").searchParams.get("limit")).toBe("2000");
     expect(workbench.state.logs.map((item) => item.id)).toEqual([2]);
   });
 
@@ -604,8 +647,8 @@ describe("工作台状态", () => {
     workbench = createWorkbench({ fetchImpl: vi.fn().mockResolvedValue(response(page([log(1)], 1))) });
     await workbench.load();
     expect(workbench.state.serverHasMore).toBe(false);
-    workbench.handleLogs({ logs: Array.from({ length: 200 }, (_, index) => log(index + 2)), clients: [client] });
-    expect(workbench.state.logs).toHaveLength(200);
+    workbench.handleLogs({ logs: Array.from({ length: 2000 }, (_, index) => log(index + 2)), clients: [client] });
+    expect(workbench.state.logs).toHaveLength(2000);
     expect(workbench.state.serverHasMore).toBe(true);
   });
 

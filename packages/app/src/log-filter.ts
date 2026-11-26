@@ -1,6 +1,8 @@
 import type { StoredLog } from "@h5-log/sdk";
 import { compileSearchQuery } from "./search-query.js";
 
+export const LOG_WINDOW_SIZE = 2000;
+
 export interface LogFilter {
   appId?: string;
   environment?: string;

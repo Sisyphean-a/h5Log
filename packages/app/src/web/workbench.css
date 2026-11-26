@@ -687,6 +687,34 @@
   color: var(--faint);
   font: 400 12px var(--mono);
 }
+.http-copy-section,
+.detail-copy-value {
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: inherit;
+  cursor: pointer;
+}
+.http-copy-section {
+  display: inline-flex;
+  padding: 2px;
+  color: var(--muted);
+}
+.detail-copy-value {
+  display: inline;
+  overflow-wrap: inherit;
+  text-align: inherit;
+}
+.http-copy-section:hover,
+.http-copy-section:focus-visible,
+.detail-copy-value:hover,
+.detail-copy-value:focus-visible {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 .detail-fields {
   display: grid;
   grid-template-columns: minmax(88px, 30%) minmax(0, 1fr);

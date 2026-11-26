@@ -59,7 +59,7 @@ it("请求仅展示存在的区域，正文 false 和显式参数不会被当成
   wrapper.unmount();
 });
 
-it("失败标记在详情标题，错误信息、空字符串和 null 仍可读", () => {
+it("失败标记在详情标题，隐藏空正文但保留错误与显式头信息", () => {
   const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: false, detail: { log: log("http", [{
     phase: "error", method: "POST", url: "/api/orders", status: 0,
     headers: null, body: "", error: { name: "NetworkError", message: "网络中断" },
@@ -67,7 +67,7 @@ it("失败标记在详情标题，错误信息、空字符串和 null 仍可读"
   expect(wrapper.get(".detail-title").text()).toContain("失败");
   expect(wrapper.text()).not.toContain("HTTP 0");
   expect(wrapper.find('[data-http-section="headers"]').text()).toContain("null");
-  expect(wrapper.find('[data-http-section="body"]').text()).toContain('""');
+  expect(wrapper.find('[data-http-section="body"]').exists()).toBe(false);
   expect(wrapper.find('[data-http-section="error"]').text()).toContain("网络中断");
   wrapper.unmount();
 });
@@ -82,6 +82,53 @@ it("空记录和非对象头信息不会生成虚构字段或丢失内容", () =
   expect(JSON.parse(wrapper.find('[data-http-section="headers"] .json').text()))
     .toEqual([["set-cookie", "one"], ["set-cookie", "two"]]);
   wrapper.unmount();
+});
+
+it.each([null, "", "  ", "[undefined]", {}, [], "{}", "[ ]"])("空正文不渲染区域：%j", (body) => {
+  for (const phase of ["request", "response"]) {
+    const wrapper = mount(HttpDetail, { props: { payload: { phase, method: "GET", url: "/ping", params: {}, body } } });
+    expect(wrapper.findAll(".http-section")).toHaveLength(0);
+    wrapper.unmount();
+  }
+});
+
+it.each(["request", "response"])("详情可复制 %s 的整段头/正文和单个值", async (phase) => {
+  const headers = { "x-test": "a:b", "x-empty": "" };
+  const body = { versionCode: 0, nested: ['a"b:c', false, null] };
+  const request = phase === "request";
+  const headerLabel = request ? "请求头" : "响应头";
+  const bodyLabel = request ? "请求正文" : "响应正文";
+  const wrapper = mount(LogDetailPanel, { props: { parsePageUrl: false, detail: {
+    log: log("http", [{ phase, headers, body }]), related: [],
+  } } });
+  try {
+    for (const label of [headerLabel, bodyLabel]) {
+      await wrapper.get(`button[aria-label="复制${label}"]`).trigger("click");
+    }
+    for (const value of wrapper.findAll(".detail-copy-value")) {
+      await value.trigger("click");
+    }
+    const copies = wrapper.emitted("copy")!;
+    expect(copies.slice(0, 2).map(([text, label]) => [JSON.parse(text as string), label]))
+      .toEqual([[headers, headerLabel], [body, bodyLabel]]);
+    expect(copies.slice(2).map(([text]) => text))
+      .toEqual(["a:b", "", "versionCode", "0", "nested", 'a"b:c', "false", "null"]);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
+it("大 JSON 的字符数不会让少量字段失去单值复制，普通文本不启用单值复制", async () => {
+  const body = { text: "x".repeat(21000) };
+  const wrapper = mount(HttpDetail, { props: { payload: { phase: "response", body } } });
+  try {
+    await wrapper.get(".tok-string.detail-copy-value").trigger("click");
+    expect(wrapper.emitted("copy")?.[0]).toEqual([body.text, "响应正文值"]);
+    await wrapper.setProps({ payload: { phase: "response", body: "普通文本：42" } });
+    expect(wrapper.find(".detail-copy-value").exists()).toBe(false);
+  } finally {
+    wrapper.unmount();
+  }
 });
 
 function log(source: StoredLog["source"], args: JsonValue[]): StoredLog {

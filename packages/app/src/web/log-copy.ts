@@ -8,7 +8,7 @@ export type LogCopyAction = {
   disabled: boolean;
 };
 
-function copyText(value: JsonValue): string {
+export function logValueCopyText(value: JsonValue): string {
   return typeof value === "string" ? value : jsonText(value);
 }
 
@@ -28,7 +28,7 @@ function trackingEvent(log: StoredLog): { event: string; original: string | unde
 export function defaultLogCopy(log: StoredLog): { text: string; label: string } {
   const original = trackingEvent(log)?.original;
   return {
-    text: original ?? log.args.map(copyText).join(" "),
+    text: original ?? log.args.map(logValueCopyText).join(" "),
     label: original === undefined ? "日志内容" : "原始埋点",
   };
 }
@@ -52,12 +52,12 @@ function curlText(log: StoredLog, payload: Record<string, JsonValue>): string | 
     for (const [key, value] of Object.entries(headers)) {
       if (value === null || value === false) continue;
       for (const item of Array.isArray(value) ? value : [value]) {
-        parts.push("-H", shellQuote(`${key}: ${copyText(item)}`));
+        parts.push("-H", shellQuote(`${key}: ${logValueCopyText(item)}`));
       }
     }
   }
   if (payload.body !== undefined && payload.body !== null) {
-    parts.push("--data-raw", shellQuote(copyText(payload.body)));
+    parts.push("--data-raw", shellQuote(logValueCopyText(payload.body)));
   }
   return parts.join(" ");
 }
@@ -71,13 +71,13 @@ export function logCopyActions(log: StoredLog): LogCopyAction[] {
     const request = payload.phase === "request";
     const label = request ? "请求" : "响应";
     const actions = [
-      action("headers", `复制${label}头`, Object.hasOwn(payload, "headers") ? copyText(payload.headers!) : undefined),
-      action("body", `复制${label}体`, Object.hasOwn(payload, "body") ? copyText(payload.body!) : undefined),
+      action("headers", `复制${label}头`, Object.hasOwn(payload, "headers") ? logValueCopyText(payload.headers!) : undefined),
+      action("body", `复制${label}体`, Object.hasOwn(payload, "body") ? logValueCopyText(payload.body!) : undefined),
     ];
     if (request) actions.push(action("curl", "复制 cURL", curlText(log, payload)));
     return actions;
   }
-  const actions = [action("copy", "复制", log.args.map(copyText).join(" "))];
+  const actions = [action("copy", "复制", log.args.map(logValueCopyText).join(" "))];
   const tracking = trackingEvent(log);
   if (tracking) {
     actions.push(action("event", "复制埋点", tracking.event));

@@ -432,6 +432,17 @@ describe("12 小时与内存淘汰规则", () => {
     expect(bytes.stats().bytes).toBeLessThanOrEqual(1024);
   });
 
+  it("工作台可申请 2000 条日志，超出请求仍按上限分页", () => {
+    const store = new LogStore();
+    store.add(Array.from({ length: 2001 }, (_, index) => event({ args: [index] })));
+    expect(store.page().logs).toHaveLength(200);
+    const latest = store.page({ limit: 5000 });
+    expect(latest.logs).toHaveLength(2000);
+    expect(latest.logs[0]?.id).toBe(2);
+    expect(latest.hasMore).toBe(true);
+    expect(store.page({ before: 2, limit: 2000 }).logs.map((log) => log.id)).toEqual([1]);
+  });
+
   it("历史页的匹配总数不受 before 分页游标影响", () => {
     const store = new LogStore();
     store.add(

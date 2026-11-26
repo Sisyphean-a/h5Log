@@ -10,7 +10,7 @@ import type {
 import { RESOURCE_INTERVAL_MS, type WorkbenchServiceStatus } from "../service-status.js";
 import type { LocalHistory } from "./history.js";
 import { requestIdOf } from "./format.js";
-import { createLogMatcher, type LogFilter } from "../log-filter.js";
+import { createLogMatcher, LOG_WINDOW_SIZE, type LogFilter } from "../log-filter.js";
 
 export type FilterState = Required<LogFilter>;
 
@@ -116,9 +116,46 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   let pendingOverflow = false;
   let pendingInvalidated = false;
   let historyBefore: number | undefined;
+  let pageVisible = true;
+  let backgroundLogs: StoredLog[] | undefined;
   let lifecycle: "active" | "suspended" | "disposed" = "active";
   let lifecycleVersion = 0;
   const matcher = computed(() => createLogMatcher(state.filter));
+
+  function keepReadingWindow(): boolean {
+    return pageVisible && !state.follow && !state.localMode && state.logs.length > 0;
+  }
+
+  function updateWindow(logs: StoredLog[], automatic = false): void {
+    // Rule: 暂停只固定前台的阅读快照，实时窗口仍限长并继续接受淘汰。
+    if (automatic && keepReadingWindow()) {
+      backgroundLogs = logs;
+    } else {
+      backgroundLogs = undefined;
+      state.logs = logs;
+    }
+  }
+
+  function clearEvictedSelection(): void {
+    if (state.selectedId !== undefined && state.selectedId <= state.evictedThroughId)
+      state.selectedId = undefined;
+  }
+
+  function releaseReadingWindow(): void {
+    if (!backgroundLogs) return;
+    updateWindow(backgroundLogs);
+    clearEvictedSelection();
+  }
+
+  function setFollowing(follow: boolean): void {
+    state.follow = follow;
+    if (follow) releaseReadingWindow();
+  }
+
+  function setPageVisible(visible: boolean): void {
+    pageVisible = visible;
+    if (!visible) releaseReadingWindow();
+  }
 
   function notice(message: string, error = false): void {
     clearTimeout(noticeTimer);
@@ -166,7 +203,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function queryParams(): URLSearchParams {
-    const params = new URLSearchParams({ limit: "200" });
+    const params = new URLSearchParams({ limit: String(LOG_WINDOW_SIZE) });
     const filter = state.filter;
     for (const [key, value] of Object.entries(filter))
       if (value) params.set(key, value);
@@ -208,7 +245,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     return expected !== state.sessions.reduce((total, session) => total + session.logCount, 0);
   }
 
-  async function load(before?: number): Promise<void> {
+  async function load(before?: number, automatic = false): Promise<void> {
     if (lifecycle !== "active") return;
     const previousBefore = historyBefore;
     const previousCursor = state.cursor;
@@ -256,10 +293,10 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       );
       // Rule: 空历史快照不含缓冲行，保留实时页时不能按快照游标丢掉这些行。
       const merged = [
-        ...(emptyEarlier ? state.logs : page.logs).filter((log) => log.id > state.evictedThroughId),
+        ...(emptyEarlier ? (backgroundLogs ?? state.logs) : page.logs).filter((log) => log.id > state.evictedThroughId),
         ...(historyBefore === undefined ? incoming : []),
       ];
-      state.logs = merged.slice(-200);
+      updateWindow(merged.slice(-LOG_WINDOW_SIZE), automatic || emptyEarlier);
       state.total =
         (page.total ?? page.logs.length) +
         [...pendingMatchIds].filter(
@@ -283,15 +320,15 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       pendingMatchIds = new Set();
       pendingOverflow = false;
       state.loading = false;
-      state.serverHasMore = page.hasMore || merged.length > 200;
+      state.serverHasMore = page.hasMore || merged.length > LOG_WINDOW_SIZE;
       if (!state.serverHasMore) void probeLocalHistory();
       notice(emptyEarlier
         ? "没有更早的服务端日志，已保留当前页"
         : before !== undefined ? "正在查看更早日志，点击“最新”返回实时" : "");
       if (invalidatedPage || (refreshPage && (pendingInvalidated || historyBefore === undefined)))
-        void load(historyBefore);
+        void load(historyBefore, automatic);
       else if (refreshSessions) void refreshSessionsIndex();
-      else if (overflowed && historyBefore !== undefined) void load(historyBefore);
+      else if (overflowed && historyBefore !== undefined) void load(historyBefore, automatic);
     } catch (error) {
       if (version !== requestVersion || lifecycle !== "active") return;
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -339,7 +376,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     pageController?.abort();
     state.loading = true;
     try {
-      const result = await history.page({ before, limit: 200, accept: matches });
+      const result = await history.page({ before, limit: LOG_WINDOW_SIZE, accept: matches });
       if (version !== requestVersion || lifecycle !== "active") return;
       state.loading = false;
       if (result.logs.length === 0) {
@@ -347,7 +384,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         notice("没有更早的本地历史，已保留当前页");
         return;
       }
-      state.logs = result.logs;
+      updateWindow(result.logs);
       state.localMode = true;
       state.localHasMore = result.hasMore;
       historyBefore = before;
@@ -370,7 +407,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function resetView(keepLogs = false): void {
-    if (!keepLogs) state.logs = [];
+    updateWindow(keepLogs ? state.logs : []);
     state.clearAfter = 0;
     state.selectedId = undefined;
     state.localMode = false;
@@ -409,7 +446,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     pendingEventIds = new Set();
     pendingScoped = [];
     state.clearAfter = state.cursor;
-    state.logs = [];
+    updateWindow([]);
     state.total = 0;
     state.selectedId = undefined;
     state.detail = undefined;
@@ -417,7 +454,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   }
 
   function resetForRestart(serverId: string): void {
-    state.logs = [];
+    updateWindow([]);
     state.detail = undefined;
     state.total = 0;
     state.serverHasMore = false;
@@ -454,13 +491,10 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
         else pendingInvalidated = true;
         pendingCursor = Math.max(pendingCursor, log.id);
       }
-      const sessionLogs = scoped.filter(
-        (log) => !pendingScoped.some((item) => item.id === log.id),
-      );
-      const nextScoped = [...pendingScoped, ...sessionLogs];
+      const nextScoped = [...pendingScoped, ...scoped];
       pendingOverflow ||=
-        nextScoped.length > 200 || pendingEventIds.size > 20000;
-      pendingScoped = nextScoped.slice(-200);
+        nextScoped.length > LOG_WINDOW_SIZE || pendingEventIds.size > 20000;
+      pendingScoped = nextScoped.slice(-LOG_WINDOW_SIZE);
       const matching = scoped.filter(matches);
       for (const log of matching) {
         if (pendingMatchIds.size < 20000) pendingMatchIds.add(log.id);
@@ -468,15 +502,16 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
       }
       if (state.localMode && matching.length > 0) state.total += matching.length;
       const matched = [...pending, ...matching];
-      pendingOverflow ||= matched.length > 200 || pendingMatchIds.size > 20000;
-      pending = matched.slice(-200);
+      pendingOverflow ||= matched.length > LOG_WINDOW_SIZE || pendingMatchIds.size > 20000;
+      pending = matched.slice(-LOG_WINDOW_SIZE);
       return;
     }
     for (const log of unseen) {
       state.cursor = Math.max(state.cursor, log.id);
       pendingEventIds.delete(log.id);
     }
-    const known = new Set(state.logs.map((log) => log.id));
+    const liveLogs = backgroundLogs ?? state.logs;
+    const known = new Set(liveLogs.map((log) => log.id));
     const sessionLogs = scoped.filter((log) => !known.has(log.id));
     const fresh = sessionLogs.filter(matches);
     addSessions(sessionLogs);
@@ -486,12 +521,9 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     }
     if (fresh.length === 0) return;
     state.total += fresh.length;
-    const combined = [...state.logs, ...fresh];
-    state.logs = combined.slice(-200);
-    if (combined.length > 200) state.serverHasMore = true;
-    if (state.follow && state.selectedId === undefined) {
-      // 视图层负责滚动到底部
-    }
+    const combined = [...liveLogs, ...fresh];
+    updateWindow(combined.slice(-LOG_WINDOW_SIZE), true);
+    if (combined.length > LOG_WINDOW_SIZE) state.serverHasMore = true;
   }
 
   function refreshRelatedDetail(incoming: StoredLog[]): void {
@@ -514,36 +546,31 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     if (lifecycle !== "active") return;
     state.clients = update.clients;
     latestRetention = update;
-    const previousLength = state.logs.length;
+    const liveLogs = backgroundLogs ?? state.logs;
     const cutoffChanged = update.evictedThroughId > state.evictedThroughId;
     state.evictedThroughId = Math.max(
       state.evictedThroughId,
       update.evictedThroughId,
     );
     // Rule: 服务端淘汰只约束实时窗口；本地存档由浏览器自身的缓存容量管理。
+    let removedRows = false;
     if (!state.localMode) {
-      state.logs = state.logs.filter(
-        (log) =>
-          log.receivedAt > update.expiresBefore &&
-          log.id > state.evictedThroughId,
+      const retained = liveLogs.filter(
+        (log) => log.receivedAt > update.expiresBefore && log.id > state.evictedThroughId,
       );
+      removedRows = retained.length < liveLogs.length;
+      if (removedRows) updateWindow(retained, true);
+      if (!keepReadingWindow()) clearEvictedSelection();
     }
     state.sessions = state.sessions.filter(
       (item) => item.lastSeen > update.expiresBefore,
     );
-    if (
-      !state.localMode &&
-      state.selectedId !== undefined &&
-      state.selectedId <= state.evictedThroughId
-    )
-      state.selectedId = undefined;
     if (cutoffChanged) {
-      const removedRows = !state.localMode && state.logs.length < previousLength;
       const changedSessions = retentionChangesSessions(update);
       if (removedRows || changedSessions) sessionRevision++;
       // Rule: 受影响列表的补读已经包含索引；无关设备的淘汰不制造查询。
       if (state.loading) return;
-      if (removedRows) void load(historyBefore);
+      if (removedRows) void load(historyBefore, true);
       else if (changedSessions) void refreshSessionsIndex();
     }
   }
@@ -563,7 +590,7 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
   function reloadView(): void {
     if (state.localMode && historyBefore !== undefined)
       void loadLocal(historyBefore);
-    else void load(historyBefore);
+    else void load(historyBefore, true);
   }
 
   function refreshSessionsIndex(): Promise<void> {
@@ -775,6 +802,8 @@ export function createWorkbench(options: WorkbenchOptions = {}) {
     loadOlder,
     loadLocal,
     latest,
+    setFollowing,
+    setPageVisible,
     setFilter,
     setScope,
     resetView,

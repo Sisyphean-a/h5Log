@@ -33,6 +33,12 @@ const listEl = ref<HTMLElement>();
 const linkPaths = ref<string[]>([]);
 const linkHeight = ref(0);
 const summaries = new WeakMap<StoredLog, string>();
+// Rule: 实时更新复用未变日志的高亮结果，切换关键词才重算。
+const highlights = computed(() => {
+  const query = props.query ?? "";
+  const cache = new WeakMap<StoredLog, ReturnType<typeof highlightLogText>>();
+  return { query, cache };
+});
 let resizeObserver: ResizeObserver | undefined;
 
 function summary(log: StoredLog): string {
@@ -46,12 +52,17 @@ function failed(log: StoredLog): boolean {
 }
 
 function piecesFor(log: StoredLog) {
+  const { query, cache } = highlights.value;
+  let pieces = cache.get(log);
+  if (pieces) return pieces;
   let text = summaries.get(log);
   if (text === undefined) {
     text = summary(log);
     summaries.set(log, text);
   }
-  return highlightLogText(text, props.query ?? "");
+  pieces = highlightLogText(text, query);
+  cache.set(log, pieces);
+  return pieces;
 }
 
 // Rule: 提示只标记每台设备某次采集的首条可见记录，不推断真实启动时间或断开状态。

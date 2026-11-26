@@ -7,7 +7,7 @@ import type {
   StoredLog,
 } from "@h5-log/sdk";
 import { randomUUID } from "node:crypto";
-import { createLogMatcher, type LogFilter as EventFilter } from "../log-filter.js";
+import { createLogMatcher, LOG_WINDOW_SIZE, type LogFilter as EventFilter } from "../log-filter.js";
 
 export const RETENTION_HOURS = 12;
 export interface StoreOptions {
@@ -171,7 +171,7 @@ export class LogStore {
 
   page(filter: LogFilter = {}): LogPage {
     this.prune();
-    const limit = Math.min(200, Math.max(1, filter.limit ?? 200));
+    const limit = Math.min(LOG_WINDOW_SIZE, Math.max(1, filter.limit ?? 200));
     const matcher = createLogMatcher(filter);
     const found: StoredLog[] = [];
     const sessions = new Map<string, LogSession>();
